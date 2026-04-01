@@ -43,6 +43,8 @@ def load_config() -> dict:
         missing.append("TELEGRAM_TOKEN")
     if not chat_id:
         missing.append("TELEGRAM_CHAT_ID")
+    if not topic_id:
+        missing.append("TELEGRAM_TOPIC_ID")
 
     if missing:
         raise EnvironmentError(
@@ -50,7 +52,7 @@ def load_config() -> dict:
             f"Crea un file .env con:\n"
             f"  TELEGRAM_TOKEN=il_tuo_token\n"
             f"  TELEGRAM_CHAT_ID=id_del_gruppo\n"
-            f"  TELEGRAM_TOPIC_ID=id_del_topic"
+            f"  TELEGRAM_TOPIC_ID=id_del_topic\n"
         )
 
     logger.info(f"Configurazione caricata. Chat ID: {chat_id} — Topic ID: {topic_id or 'non impostato'}")
