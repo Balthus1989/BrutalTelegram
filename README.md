@@ -1,78 +1,67 @@
-# 🤘 Brutal Assault Italia Bot
+# Brutal Assault Italia Bot
 
-Bot Telegram che monitora il [Ticket Exchange ufficiale](https://brutalassault.cz/en/xchange)
-e notifica il gruppo ogni volta che appare un nuovo annuncio di vendita.
+Bot Telegram che monitora il [Ticket Exchange ufficiale di Brutal Assault](https://brutalassault.cz/en/xchange) e notifica automaticamente un gruppo Telegram ogni volta che appare un nuovo annuncio di vendita biglietti.
 
-## Setup
+Quando un biglietto viene venduto, il messaggio corrispondente viene eliminato automaticamente dal gruppo.
 
-### 1. Installa le dipendenze con uv
+## Funzionalita
+
+- Polling automatico ogni 5 minuti sulla pagina del Ticket Exchange
+- Notifica immediata nel gruppo Telegram per ogni nuovo annuncio
+- Eliminazione automatica dei messaggi per biglietti venduti
+- Persistenza dello stato per evitare notifiche duplicate
+- Supporto per Telegram Forum (topic mode)
+
+## Comandi
+
+| Comando | Descrizione |
+|---------|-------------|
+| `/start` | Messaggio di benvenuto |
+| `/status` | Stato del bot e annunci tracciati |
+| `/listings` | Annunci attualmente disponibili |
+
+## Requisiti
+
+- Python 3.10+
+- [uv](https://github.com/astral-sh/uv) (package manager)
+- Un bot Telegram (creato tramite @BotFather) con permessi di amministratore nel gruppo
+
+## Installazione
 
 ```bash
+git clone <repo-url>
+cd BrutalTelegram
 uv add python-telegram-bot httpx beautifulsoup4 apscheduler python-dotenv
 ```
 
-### 2. Crea il file .env
+## Configurazione
 
-```bash
-cp .env.example .env
-```
-
-Modifica `.env` con i tuoi valori:
+Crea un file `.env` nella root del progetto:
 
 ```
 TELEGRAM_TOKEN=il_token_del_bot
 TELEGRAM_CHAT_ID=id_del_gruppo
+TELEGRAM_TOPIC_ID=id_del_topic
 ```
 
-**Come ottenere il token:**
-- Vai su Telegram, cerca `@BotFather`
-- Scrivi `/newbot` e segui le istruzioni
-- Copia il token che ti fornisce
-
-**Come ottenere il Chat ID del gruppo:**
-- Aggiungi `@userinfobot` al tuo gruppo Telegram
-- Scrivi `/start` nel gruppo
-- Il bot ti risponde con l'ID (sarà un numero negativo tipo `-1001234567890`)
-- Rimuovi `@userinfobot` dal gruppo dopo aver preso l'ID
-
-> ⚠️ Il bot deve essere **admin** del gruppo per poter inviare messaggi.
-
-### 3. Avvia il bot
+## Avvio
 
 ```bash
 uv run main.py
 ```
 
-## Comandi disponibili
-
-| Comando | Descrizione |
-|---------|-------------|
-| `/start` | Mostra il messaggio di benvenuto |
-| `/status` | Stato del bot e numero di annunci tracciati |
-| `/listings` | Mostra gli annunci attualmente disponibili |
-
-## Come funziona
-
-1. All'avvio esegue subito un primo controllo
-2. Ogni **5 minuti** controlla la pagina del Ticket Exchange
-3. Se trova annunci con ID non ancora visti, invia una notifica nel gruppo
-4. Salva gli ID visti in `seen_tickets.json` per non mandare duplicati
-
-## Struttura progetto
+## Struttura
 
 ```
-brutal-telegram/
-├── main.py          # Entry point, scheduler, comandi bot
-├── scraper.py       # Fetch e parsing della pagina xchange
-├── notifier.py      # Formattazione e invio messaggi Telegram
-├── state.py         # Persistenza degli ID già notificati
-├── config.py        # Caricamento variabili d'ambiente
-├── .env             # Configurazione (non committare su git!)
-└── seen_tickets.json  # Generato automaticamente
+BrutalTelegram/
+├── main.py        # Entry point, scheduler, comandi bot
+├── scraper.py     # Fetch e parsing della pagina xchange
+├── notifier.py    # Formattazione e invio messaggi Telegram
+├── state.py       # Persistenza stato (seen_tickets.json)
+├── config.py      # Caricamento configurazione da .env
+└── .env           # Configurazione (non tracciato da git)
 ```
 
-## Note
+## Licenza
 
-- Il bot deve essere aggiunto al gruppo come **amministratore**
-- `seen_tickets.json` viene creato automaticamente al primo avvio
-- Aggiungere `.env` e `seen_tickets.json` al `.gitignore`
+Uso privato.
