@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler
 from config import load_config
 from scraper import fetch_listings
 from notifier import notify_new_listings, delete_sold_messages
-from state import load_state, save_state, load_seen_ids, save_seen_ids
+from state import load_state, save_state, load_seen_ids
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -34,7 +34,7 @@ async def check_exchange(app: Application, chat_id: str, topic_id: int = None) -
         return
 
     state = load_state()  # { listing_id -> message_id }
-    current_ids = {l["id"] for l in listings}
+    current_ids = {listing["id"] for listing in listings}
     known_ids = set(state.keys())
 
     # Annunci nuovi: presenti ora ma non ancora tracciati
@@ -100,10 +100,10 @@ async def cmd_listings(update, context) -> None:
         return
 
     lines = ["🎟️ *Annunci disponibili sul Ticket Exchange:*\n"]
-    for l in listings:
+    for listing in listings:
         lines.append(
-            f"• {l['product']} — *€ {l['price']}*\n"
-            f"  [Vedi dettaglio]({l['url']})"
+            f"• {listing['product']} — *€ {listing['price']}*\n"
+            f"  [Vedi dettaglio]({listing['url']})"
         )
 
     await update.message.reply_text(

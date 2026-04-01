@@ -9,6 +9,17 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 
+def _parse_topic_id(value: str | None) -> int | None:
+    """Converte il topic_id in intero, restituisce None se assente o non valido."""
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning(f"TELEGRAM_TOPIC_ID non valido: '{value}'. Verrà ignorato.")
+        return None
+
+
 def load_config() -> dict:
     """
     Carica la configurazione dal file .env.
@@ -46,5 +57,5 @@ def load_config() -> dict:
     return {
         "token": token,
         "chat_id": chat_id,
-        "topic_id": int(topic_id) if topic_id else None,
+        "topic_id": _parse_topic_id(topic_id),
     }

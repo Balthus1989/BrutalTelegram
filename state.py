@@ -18,7 +18,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-STATE_FILE = Path("seen_tickets.json")
+STATE_FILE = Path(__file__).parent / "seen_tickets.json"
 
 
 def load_state() -> dict[str, int]:
