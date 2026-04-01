@@ -14,16 +14,18 @@ def load_config() -> dict:
     Carica la configurazione dal file .env.
 
     Variabili richieste:
-        TELEGRAM_TOKEN  — token del bot (da @BotFather)
-        TELEGRAM_CHAT_ID — ID del gruppo/canale da notificare
+        TELEGRAM_TOKEN      — token del bot (da @BotFather)
+        TELEGRAM_CHAT_ID    — ID del gruppo/canale da notificare
+        TELEGRAM_TOPIC_ID   — ID del topic dove pubblicare (forum mode)
 
     Returns:
-        Dict con chiavi: token, chat_id
+        Dict con chiavi: token, chat_id, topic_id
     """
     load_dotenv()
 
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    topic_id = os.getenv("TELEGRAM_TOPIC_ID")
 
     missing = []
     if not token:
@@ -36,8 +38,13 @@ def load_config() -> dict:
             f"Variabili d'ambiente mancanti nel file .env: {', '.join(missing)}\n"
             f"Crea un file .env con:\n"
             f"  TELEGRAM_TOKEN=il_tuo_token\n"
-            f"  TELEGRAM_CHAT_ID=id_del_gruppo"
+            f"  TELEGRAM_CHAT_ID=id_del_gruppo\n"
+            f"  TELEGRAM_TOPIC_ID=id_del_topic"
         )
 
-    logger.info(f"Configurazione caricata. Chat ID: {chat_id}")
-    return {"token": token, "chat_id": chat_id}
+    logger.info(f"Configurazione caricata. Chat ID: {chat_id} — Topic ID: {topic_id or 'non impostato'}")
+    return {
+        "token": token,
+        "chat_id": chat_id,
+        "topic_id": int(topic_id) if topic_id else None,
+    }

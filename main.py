@@ -11,8 +11,8 @@ from telegram.ext import Application, CommandHandler
 
 from config import load_config
 from scraper import fetch_listings
-from notifier import notify_new_listings
-from state import load_seen_ids, save_seen_ids
+from notifier import notify_new_listings, delete_sold_messages
+from state import load_state, save_state, load_seen_ids, save_seen_ids
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_MINUTES = 5
 
 
-async def check_exchange(app: Application, chat_id: str) -> None:
-    """Controlla il Ticket Exchange e notifica nuovi annunci."""
+async def check_exchange(app: Application, chat_id: str, topic_id: int = None) -> None:
+    """Controlla il Ticket Exchange, notifica nuovi annunci ed elimina i venduti."""
     logger.info("Controllo Ticket Exchange...")
 
     listings = await fetch_listings()
@@ -33,26 +33,36 @@ async def check_exchange(app: Application, chat_id: str) -> None:
         logger.warning("Impossibile recuperare i listing. Riprovo al prossimo ciclo.")
         return
 
-    seen_ids = load_seen_ids()
-    new_listings = [l for l in listings if l["id"] not in seen_ids]
+    state = load_state()  # { listing_id -> message_id }
+    current_ids = {l["id"] for l in listings}
+    known_ids = set(state.keys())
 
+    # Annunci nuovi: presenti ora ma non ancora tracciati
+    new_listings = [l for l in listings if l["id"] not in known_ids]
+
+    # Annunci venduti: erano tracciati ma non compaiono più
+    sold_ids = known_ids - current_ids
+    sold_listings = {lid: state[lid] for lid in sold_ids if state[lid] is not None}
+
+    # Notifica nuovi annunci
     if new_listings:
         logger.info(f"Trovati {len(new_listings)} nuovi annunci.")
-        sent = await notify_new_listings(app.bot, chat_id, new_listings)
-        if sent:
-            # Aggiorna lo stato solo se le notifiche sono state inviate
-            for listing in new_listings:
-                seen_ids.add(listing["id"])
-            save_seen_ids(seen_ids)
+        sent = await notify_new_listings(app.bot, chat_id, new_listings, topic_id)
+        for listing_id, message_id in sent.items():
+            state[listing_id] = message_id
     else:
         logger.info("Nessun nuovo annuncio.")
 
-    # Aggiorna comunque lo stato con tutti gli ID attuali
-    # (rimuove automaticamente quelli non più in lista)
-    all_current_ids = {l["id"] for l in listings}
-    # Mantieni solo quelli ancora attivi + quelli nuovi già salvati
-    seen_ids = seen_ids.intersection(all_current_ids) | {l["id"] for l in listings}
-    save_seen_ids(seen_ids)
+    # Elimina messaggi dei biglietti venduti
+    if sold_listings:
+        logger.info(f"{len(sold_listings)} biglietti venduti — elimino i messaggi.")
+        await delete_sold_messages(app.bot, chat_id, sold_listings)
+        for listing_id in sold_ids:
+            state.pop(listing_id, None)
+    else:
+        logger.info("Nessun biglietto venduto.")
+
+    save_state(state)
 
 
 async def cmd_start(update, context) -> None:
@@ -119,7 +129,7 @@ async def main() -> None:
         check_exchange,
         trigger="interval",
         minutes=POLL_INTERVAL_MINUTES,
-        args=[app, config["chat_id"]],
+        args=[app, config["chat_id"], config["topic_id"]],
         id="exchange_poll",
         replace_existing=True,
     )
@@ -129,7 +139,7 @@ async def main() -> None:
 
     # Esegui subito un primo controllo all'avvio
     async with app:
-        await check_exchange(app, config["chat_id"])
+        await check_exchange(app, config["chat_id"], config["topic_id"])
         await app.start()
         await app.updater.start_polling()
         logger.info("Bot in ascolto. Premi Ctrl+C per fermare.")
