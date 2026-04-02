@@ -9,17 +9,6 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 
-def _parse_topic_id(value: str | None) -> int | None:
-    """Converte il topic_id in intero, restituisce None se assente o non valido."""
-    if not value:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        logger.warning(f"TELEGRAM_TOPIC_ID non valido: '{value}'. Verrà ignorato.")
-        return None
-
-
 def load_config() -> dict:
     """
     Carica la configurazione dal file .env.
@@ -32,7 +21,7 @@ def load_config() -> dict:
     Returns:
         Dict con chiavi: token, chat_id, topic_id
     """
-    load_dotenv()
+    load_dotenv(override=False)  # .env opzionale — su Railway le variabili arrivano dall'ambiente
 
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -43,8 +32,6 @@ def load_config() -> dict:
         missing.append("TELEGRAM_TOKEN")
     if not chat_id:
         missing.append("TELEGRAM_CHAT_ID")
-    if not topic_id:
-        missing.append("TELEGRAM_TOPIC_ID")
 
     if missing:
         raise EnvironmentError(
@@ -52,12 +39,12 @@ def load_config() -> dict:
             f"Crea un file .env con:\n"
             f"  TELEGRAM_TOKEN=il_tuo_token\n"
             f"  TELEGRAM_CHAT_ID=id_del_gruppo\n"
-            f"  TELEGRAM_TOPIC_ID=id_del_topic\n"
+            f"  TELEGRAM_TOPIC_ID=id_del_topic"
         )
 
     logger.info(f"Configurazione caricata. Chat ID: {chat_id} — Topic ID: {topic_id or 'non impostato'}")
     return {
         "token": token,
         "chat_id": chat_id,
-        "topic_id": _parse_topic_id(topic_id),
+        "topic_id": int(topic_id) if topic_id else None,
     }
