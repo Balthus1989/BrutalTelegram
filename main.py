@@ -116,15 +116,30 @@ async def cmd_listings(update, context) -> None:
     )
 
 
-async def check_news(bot, chat_id: str, news_topic_id: int):
+async def check_news(app: Application, chat_id: str, news_topic_id: int) -> None:
+    """Controlla le news di Brutal Assault e notifica il gruppo Telegram."""
+    logger.info("Controllo news Brutal Assault...")
+    try:
+        articoli = await fetch_news()
+    except Exception as e:
+        logger.warning(f"Impossibile recuperare le news: {e}")
+        return
+
     seen = load_seen()
-    articoli = await fetch_news()
-    
-    for art in reversed(articoli):
-        if art["id"] not in seen:
-            await send_news(bot, chat_id, news_topic_id, art)
+    nuovi = [a for a in reversed(articoli) if a["id"] not in seen]
+
+    if not nuovi:
+        logger.info("Nessuna nuova news.")
+        return
+
+    logger.info(f"Trovate {len(nuovi)} nuove news.")
+    for art in nuovi:
+        try:
+            await send_news(app.bot, chat_id, news_topic_id, art)
             seen.add(art["id"])
-    
+        except Exception as e:
+            logger.exception(f"Errore invio news {art.get('id')}: {e}")
+
     save_seen(seen)
 
 
@@ -165,6 +180,7 @@ async def main() -> None:
     # Esegui subito un primo controllo all'avvio
     async with app:
         await check_exchange(app, config["chat_id"], config["topic_id"])
+        await check_news(app, config["chat_id"], config["news_topic_id"])
         await app.start()
         await app.updater.start_polling()
         logger.info("Bot in ascolto. Premi Ctrl+C per fermare.")

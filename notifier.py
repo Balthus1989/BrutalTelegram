@@ -120,5 +120,6 @@ async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
-    except Exception as e:
-        print(f"Errore invio news: {e}")
+    except Exception:
+        logger.exception("Errore invio news")
+        raise
