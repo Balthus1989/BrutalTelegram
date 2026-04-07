@@ -1,6 +1,7 @@
 brutal-telegram/
 seen_tickets.json
 seen_news.json
+MANUAL.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
