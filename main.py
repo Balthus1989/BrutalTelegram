@@ -75,7 +75,8 @@ async def cmd_start(update, context) -> None:
         "Comandi disponibili:\n"
         "/start - Mostra questo messaggio\n"
         "/status - Stato del bot\n"
-        "/listings - Mostra gli annunci attuali",
+        "/listings - Mostra gli annunci attuali\n"
+        "/news - Mostra le ultime notizie",
         parse_mode="Markdown",
     )
 
@@ -108,6 +109,30 @@ async def cmd_listings(update, context) -> None:
             f"• {listing['product']} — *€ {listing['price']}*\n"
             f"  [Vedi dettaglio]({listing['url']})"
         )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
+
+
+async def cmd_news(update, context) -> None:
+    """Mostra le ultime notizie di Brutal Assault."""
+    await update.message.reply_text("📰 Recupero notizie in corso...")
+    try:
+        articoli = await fetch_news()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Impossibile recuperare le notizie: {e}")
+        return
+
+    if not articoli:
+        await update.message.reply_text("📭 Nessuna notizia disponibile al momento.")
+        return
+
+    lines = ["📰 *Ultime notizie Brutal Assault:*\n"]
+    for art in articoli[:10]:
+        lines.append(f"• [{art['titolo']}]({art['url']})")
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -152,6 +177,7 @@ async def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("listings", cmd_listings))
+    app.add_handler(CommandHandler("news", cmd_news))
 
     # Scheduler per il polling
     scheduler = AsyncIOScheduler()
