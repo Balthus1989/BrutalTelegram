@@ -102,23 +102,28 @@ async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
         [InlineKeyboardButton("📰 Leggi l'articolo originale", url=articolo["url"])]
     ])
     
+    # Nel topic "General" dei forum non va passato message_thread_id
+    kwargs = {}
+    if topic_id and int(topic_id) > 1:
+        kwargs["message_thread_id"] = int(topic_id)
+
     try:
         if dettagli["image_url"]:
             await bot.send_photo(
                 chat_id=chat_id,
-                message_thread_id=topic_id,
                 photo=dettagli["image_url"],
                 caption=caption,
                 parse_mode="Markdown",
-                reply_markup=keyboard
+                reply_markup=keyboard,
+                **kwargs,
             )
         else:
             await bot.send_message(
                 chat_id=chat_id,
-                message_thread_id=topic_id,
                 text=caption,
                 parse_mode="Markdown",
-                reply_markup=keyboard
+                reply_markup=keyboard,
+                **kwargs,
             )
     except Exception:
         logger.exception("Errore invio news")
