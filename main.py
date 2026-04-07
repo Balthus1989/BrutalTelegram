@@ -10,9 +10,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application, CommandHandler
 
 from config import load_config
-from scraper import fetch_listings
-from notifier import notify_new_listings, delete_sold_messages
-from state import load_state, save_state, load_seen_ids
+from ticket_scraper import fetch_listings
+from notifier import notify_new_listings, delete_sold_messages, send_news
+from ticket_state import load_state, save_state, load_seen_ids
+
+from news_scraper import fetch_news
+from news_state import load_seen, save_seen
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -113,6 +116,18 @@ async def cmd_listings(update, context) -> None:
     )
 
 
+async def check_news(bot, chat_id: str, news_topic_id: int):
+    seen = load_seen()
+    articoli = await fetch_news()
+    
+    for art in reversed(articoli):
+        if art["id"] not in seen:
+            await send_news(bot, chat_id, news_topic_id, art)
+            seen.add(art["id"])
+    
+    save_seen(seen)
+
+
 async def main() -> None:
     config = load_config()
 
@@ -125,12 +140,22 @@ async def main() -> None:
 
     # Scheduler per il polling
     scheduler = AsyncIOScheduler()
+
     scheduler.add_job(
         check_exchange,
         trigger="interval",
         minutes=POLL_INTERVAL_MINUTES,
         args=[app, config["chat_id"], config["topic_id"]],
         id="exchange_poll",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        check_news,
+        trigger="interval",
+        minutes=POLL_INTERVAL_MINUTES,
+        args=[app, config["chat_id"], config["news_topic_id"]],
+        id="news_check",
         replace_existing=True,
     )
 

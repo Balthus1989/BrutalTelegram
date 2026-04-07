@@ -7,6 +7,10 @@ from telegram import Bot
 from telegram.error import TelegramError
 from telegram.constants import ParseMode
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from news_scraper import fetch_article
+from translator import traduci
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,3 +80,45 @@ async def delete_sold_messages(
             logger.info(f"Messaggio eliminato per biglietto venduto ID: {listing_id} (message_id: {message_id})")
         except TelegramError as e:
             logger.warning(f"Impossibile eliminare il messaggio {message_id} per annuncio {listing_id}: {e}")
+
+
+async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
+    """Invia una news con immagine, testo tradotto e bottone link"""
+    
+    # Scrapa e traduce
+    dettagli = await fetch_article(articolo["url"])
+    titolo_it = traduci(articolo["titolo"])
+    testo_it = traduci(dettagli["testo"])
+    
+    # Tronca il testo se troppo lungo (Telegram: max 1024 char per caption)
+    testo_breve = testo_it[:900] + "..." if len(testo_it) > 900 else testo_it
+    
+    caption = (
+        f"🤘 *{titolo_it}*\n\n"
+        f"{testo_breve}"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📰 Leggi l'articolo originale", url=articolo["url"])]
+    ])
+    
+    try:
+        if dettagli["image_url"]:
+            await bot.send_photo(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                photo=dettagli["image_url"],
+                caption=caption,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        else:
+            await bot.send_message(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                text=caption,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+    except Exception as e:
+        print(f"Errore invio news: {e}")
