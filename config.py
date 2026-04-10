@@ -27,6 +27,7 @@ def load_config() -> dict:
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     topic_id = os.getenv("TELEGRAM_TOPIC_ID")
     news_topic_id = os.getenv("TELEGRAM_NEWS_TOPIC_ID")
+    weather_topic_id = os.getenv("TELEGRAM_WEATHER_TOPIC_ID")
 
     missing = []
     if not token:
@@ -42,6 +43,7 @@ def load_config() -> dict:
             f"  TELEGRAM_CHAT_ID=id_del_gruppo\n"
             f"  TELEGRAM_TOPIC_ID=id_del_topic\n"
             f"  TELEGRAM_NEWS_TOPIC_ID=id_del_topic_news"
+            f"  TELEGRAM_WEATHER_TOPIC_ID=id_del_topic_weather"
         )
 
     logger.info(f"Configurazione caricata. Chat ID: {chat_id} — Topic ID: {topic_id or 'non impostato'}")
@@ -50,4 +52,5 @@ def load_config() -> dict:
         "chat_id": chat_id,
         "topic_id": int(topic_id) if topic_id else None,
         "news_topic_id": int(news_topic_id) if news_topic_id else None,
+        "weather_topic_id": int(weather_topic_id) if weather_topic_id else None,
     }

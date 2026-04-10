@@ -5,17 +5,29 @@ per ogni nuovo annuncio di vendita.
 """
 
 import asyncio
+import io
+
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application, CommandHandler
 
 from config import load_config
-from ticket_scraper import fetch_listings
-from notifier import notify_new_listings, delete_sold_messages, send_news
-from ticket_state import load_state, save_state, load_seen_ids
+from tickets.ticket_scraper import fetch_listings
+from tickets.ticket_state import load_state, save_state, load_seen_ids
 
-from news_scraper import fetch_news
-from news_state import load_seen, save_seen
+from news.news_scraper import fetch_news
+from news.news_state import load_seen, save_seen
+
+from weather_forecast.weather import (
+    fetch_weather_command,
+    fetch_weather_festival,
+    format_weather_command,
+    format_weather_festival,
+    days_until_festival,
+)
+from weather_forecast.webcam import fetch_webcam_snapshot
+
+from notifier import notify_new_listings, delete_sold_messages, send_news, send_weather
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -76,7 +88,8 @@ async def cmd_start(update, context) -> None:
         "/start - Mostra questo messaggio\n"
         "/status - Stato del bot\n"
         "/listings - Mostra gli annunci attuali\n"
-        "/news - Mostra le ultime notizie",
+        "/news - Mostra le ultime notizie\n"
+        "/weather - Previsioni meteo per i giorni del festival",
         parse_mode="Markdown",
     )
 
@@ -141,6 +154,24 @@ async def cmd_news(update, context) -> None:
     )
 
 
+# Comando /meteo — sempre disponibile, 7 giorni generici
+async def cmd_weather(update, context) -> None:
+    data = await fetch_weather_command()
+    testo = format_weather_command(data)
+    snapshot = await fetch_webcam_snapshot()
+
+    if snapshot:
+        await update.message.reply_photo(
+            photo=io.BytesIO(snapshot),
+            caption=testo,
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(testo, parse_mode="HTML", disable_web_page_preview=True)
+
+
+
+
 async def check_news(app: Application, chat_id: str, news_topic_id: int) -> None:
     """Controlla le news di Brutal Assault e notifica il gruppo Telegram."""
     logger.info("Controllo news Brutal Assault...")
@@ -168,6 +199,7 @@ async def check_news(app: Application, chat_id: str, news_topic_id: int) -> None
     save_seen(seen)
 
 
+
 async def main() -> None:
     config = load_config()
 
@@ -178,6 +210,7 @@ async def main() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("listings", cmd_listings))
     app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler("weather", cmd_weather))
 
     # Scheduler per il polling
     scheduler = AsyncIOScheduler()
@@ -197,6 +230,17 @@ async def main() -> None:
         minutes=POLL_INTERVAL_MINUTES,
         args=[app, config["chat_id"], config["news_topic_id"]],
         id="news_check",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        send_weather,
+        trigger="cron",
+        hour=8,
+        minute=0,
+        timezone="Europe/Prague",
+        args=[app, config["chat_id"], config["weather_topic_id"]],
+        id="daily_weather",
         replace_existing=True,
     )
 

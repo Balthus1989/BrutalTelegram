@@ -3,13 +3,17 @@ Modulo per l'invio delle notifiche Telegram.
 """
 
 import logging
+import io
 from telegram import Bot
+from telegram.ext import Application
 from telegram.error import TelegramError
 from telegram.constants import ParseMode
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from news_scraper import fetch_article
-from translator import traduci
+from news.news_scraper import fetch_article
+from weather_forecast.weather import fetch_weather_festival, format_weather_festival
+from weather_forecast.webcam import fetch_webcam_snapshot
+from translator import translate
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +91,8 @@ async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
     
     # Scrapa e traduce
     dettagli = await fetch_article(articolo["url"])
-    titolo_it = traduci(articolo["titolo"])
-    testo_it = traduci(dettagli["testo"])
+    titolo_it = translate(articolo["titolo"])
+    testo_it = translate(dettagli["testo"])
     
     # Tronca il testo se troppo lungo (Telegram: max 1024 char per caption)
     testo_breve = testo_it[:900] + "..." if len(testo_it) > 900 else testo_it
@@ -128,3 +132,30 @@ async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
     except Exception:
         logger.exception("Errore invio news")
         raise
+
+
+# Report automatico — solo vicino al festival
+async def send_weather(app: Application, chat_id: str, topic_id: int) -> None:
+    data = await fetch_weather_festival()
+    if data is None:
+        return  # Fuori finestra, non pubblicare nulla
+
+    testo = format_weather_festival(data)
+    snapshot = await fetch_webcam_snapshot()
+
+    if snapshot:
+        await app.bot.send_photo(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            photo=io.BytesIO(snapshot),
+            caption=testo,
+            parse_mode="HTML",
+        )
+    else:
+        await app.bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            text=testo,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
