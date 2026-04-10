@@ -4,6 +4,8 @@ Bot Telegram che monitora il [Ticket Exchange ufficiale di Brutal Assault](https
 
 Quando un biglietto viene venduto, il messaggio corrispondente viene eliminato automaticamente dal gruppo. Le news vengono pubblicate con titolo e testo tradotti automaticamente in italiano, immagine di copertina e bottone al link originale.
 
+Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede del festival) tramite comando e report automatici giornalieri nei giorni che precedono l'evento, con snapshot dalla webcam locale.
+
 ## Funzionalita
 
 - Polling automatico ogni 5 minuti sulla pagina del Ticket Exchange
@@ -11,7 +13,10 @@ Quando un biglietto viene venduto, il messaggio corrispondente viene eliminato a
 - Notifica immediata nel gruppo Telegram per ogni nuovo annuncio e ogni nuova news
 - Eliminazione automatica dei messaggi per biglietti venduti
 - Persistenza dello stato per evitare notifiche duplicate (biglietti e news)
-- Supporto per Telegram Forum (topic mode), con topic separati per ticket e news
+- Supporto per Telegram Forum (topic mode), con topic separati per ticket, news e meteo
+- Previsioni meteo 7 giorni per Jaroměř tramite API Open-Meteo (gratuita, senza API key)
+- Report meteo automatico giornaliero alle 08:00 (fuso Europe/Prague) nei 15 giorni prima del festival e durante lo stesso, con previsioni filtrate sui soli giorni del festival (5-8 agosto 2026)
+- Snapshot dalla webcam live di Josefov allegata ai messaggi meteo
 
 ## Comandi
 
@@ -21,6 +26,7 @@ Quando un biglietto viene venduto, il messaggio corrispondente viene eliminato a
 | `/status` | Stato del bot e annunci tracciati |
 | `/listings` | Annunci attualmente disponibili |
 | `/news` | Ultime notizie di Brutal Assault |
+| `/weather` | Previsioni meteo 7 giorni per Jaroměř con countdown al festival |
 
 ## Requisiti
 
@@ -51,9 +57,10 @@ TELEGRAM_TOKEN=il_token_del_bot
 TELEGRAM_CHAT_ID=id_del_gruppo
 TELEGRAM_TOPIC_ID=id_del_topic_ticket
 TELEGRAM_NEWS_TOPIC_ID=id_del_topic_news
+TELEGRAM_WEATHER_TOPIC_ID=id_del_topic_meteo
 ```
 
-> **Nota sui topic id nei forum Telegram:** il topic "General" non ha un thread id valido. Se vuoi pubblicare nel General, lascia `TELEGRAM_NEWS_TOPIC_ID` vuoto o impostalo a `1` — il bot ometterà automaticamente il `message_thread_id`. Per topic reali, apri un messaggio del topic → "Copia link" → il numero dopo `/c/<chat_id>/` è il thread id da usare.
+> **Nota sui topic id nei forum Telegram:** il topic "General" non ha un thread id valido. Se vuoi pubblicare nel General, lascia il topic id vuoto o impostalo a `1` — il bot omettera automaticamente il `message_thread_id`. Per topic reali, apri un messaggio del topic, clicca "Copia link" e il numero dopo `/c/<chat_id>/` e il thread id da usare.
 
 ## Avvio
 
@@ -65,15 +72,20 @@ uv run main.py
 
 ```
 BrutalTelegram/
-├── main.py            # Entry point, scheduler, comandi bot
-├── ticket_scraper.py  # Fetch e parsing della pagina xchange
-├── news_scraper.py    # Fetch e parsing delle news + articoli
-├── translator.py      # Traduzione testi in italiano
-├── notifier.py        # Formattazione e invio messaggi Telegram (ticket + news)
-├── ticket_state.py    # Persistenza stato ticket (seen_tickets.json)
-├── news_state.py      # Persistenza stato news (seen_news.json)
-├── config.py          # Caricamento configurazione da .env
-└── .env               # Configurazione (non tracciato da git)
+├── main.py                        # Entry point, scheduler, comandi bot
+├── config.py                      # Caricamento configurazione da .env
+├── notifier.py                    # Formattazione e invio messaggi Telegram (ticket + news)
+├── translator.py                  # Traduzione testi in italiano (Google Translate)
+├── tickets/
+│   ├── ticket_scraper.py          # Fetch e parsing della pagina xchange
+│   └── ticket_state.py            # Persistenza stato ticket (seen_tickets.json)
+├── news/
+│   ├── news_scraper.py            # Fetch e parsing delle news + articoli
+│   └── news_state.py              # Persistenza stato news (seen_news.json)
+├── weather_forecast/
+│   ├── weather.py                 # Previsioni meteo via Open-Meteo API
+│   └── webcam.py                  # Snapshot webcam live da Josefov
+└── .env                           # Configurazione (non tracciato da git)
 ```
 
 ## Licenza
