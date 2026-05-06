@@ -1,7 +1,8 @@
 import json, os
+from pathlib import Path
 
 #NEWS_STATE_FILE = "seen_news.json"
-NEWS_STATE_FILE = "/data/seen_news.json"
+NEWS_STATE_FILE = Path("/data/seen_news.json")
 
 def load_seen() -> set:
     if not os.path.exists(NEWS_STATE_FILE):
