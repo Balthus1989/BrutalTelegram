@@ -1,0 +1,13 @@
+app = "brutal-telegram-bot"   # nome univoco su Fly
+primary_region = "fra"        # Frankfurt, il più vicino
+
+[build]
+
+[env]
+  # Variabili non segrete (le segrete le metti con flyctl secrets)
+
+# Nessun http_service — è un worker, non espone porte
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
