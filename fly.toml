@@ -1,13 +1,27 @@
-app = "brutal-telegram-bot"   # nome univoco su Fly
-primary_region = "fra"        # Frankfurt, il più vicino
+# fly.toml app configuration file generated for brutaltelegram on 2026-05-06T12:41:37Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'brutaltelegram'
+primary_region = 'fra'
 
 [build]
+  builder = 'paketobuildpacks/builder:base'
 
 [env]
-  # Variabili non segrete (le segrete le metti con flyctl secrets)
+  PORT = '8080'
 
-# Nessun http_service — è un worker, non espone porte
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
 [[vm]]
-  memory = "256mb"
-  cpu_kind = "shared"
+  memory = '256mb'
+  cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 256
