@@ -11,6 +11,7 @@ from telegram.constants import ParseMode
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from news.news_scraper import fetch_article
+from tickets.ticket_scraper import get_face_value
 from weather_forecast.weather import fetch_weather_festival, format_weather_festival
 from weather_forecast.webcam import fetch_webcam_snapshot
 from translator import translate
@@ -18,12 +19,34 @@ from translator import translate
 logger = logging.getLogger(__name__)
 
 
+def format_price_delta(listing_price: float, face_value: float) -> str:
+    delta = listing_price - face_value
+    pct = (delta / face_value) * 100
+    if abs(delta) < 0.01:
+        return "🟰 Prezzo originale"
+    elif delta > 0:
+        return f"🔺 +€{delta:.2f} (+{pct:.0f}%) rispetto all'originale"
+    else:
+        return f"🔻 -€{abs(delta):.2f} (-{abs(pct):.0f}%) rispetto all'originale"
+
+
 def format_listing_message(listing: dict) -> str:
     """Formatta un annuncio come messaggio Telegram."""
+    try:
+        listing_price = float(listing["price"])
+    except (ValueError, TypeError):
+        listing_price = None
+
+    face_value = get_face_value(listing["product"])
+
+    delta_line = ""
+    if listing_price is not None and face_value is not None:
+        delta_line = f"\n📊 {format_price_delta(listing_price, face_value)}"
+
     return (
         f"🔔 *Nuovo annuncio sul Ticket Exchange!*\n\n"
         f"🎟️ *{listing['product']}*\n"
-        f"💶 Prezzo: *€ {listing['price']}*\n\n"
+        f"💶 Prezzo: *€ {listing['price']}*{delta_line}\n\n"
         f"👉 [Vedi annuncio]({listing['url']})\n\n"
         f"🏰 _Brutal Assault 2026 — Josefov, 5-8 Agosto_"
     )
