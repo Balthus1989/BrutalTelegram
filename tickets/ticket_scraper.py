@@ -10,6 +10,30 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+FACE_VALUE_PRICES: dict[str, float] = {
+    "natural stand": 34.00,
+    "vip lounge": 85.00,
+    "parking 666": 21.99,
+    "locker box": 39.99,
+    "voucher for juniors": 85.00,
+    "voucher for kids": 4.49,
+    "daily pass tuesday": 42.49,
+    "daily pass wednesday": 106.66,
+    "daily pass thursday": 106.66,
+    "daily pass friday": 106.66,
+    "daily pass saturday": 106.66,
+    "disabled": 85.00,
+    "festival pass": 216.66,
+}
+
+
+def get_face_value(product: str) -> float | None:
+    product_lower = product.lower()
+    for pattern, price in FACE_VALUE_PRICES.items():
+        if pattern in product_lower:
+            return price
+    return None
+
 XCHANGE_URL = "https://brutalassault.cz/en/xchange"
 BASE_URL = "https://brutalassault.cz"
 

@@ -12,7 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application, CommandHandler
 
 from config import load_config
-from tickets.ticket_scraper import fetch_listings
+from tickets.ticket_scraper import fetch_listings, get_face_value
 from tickets.ticket_state import load_state, save_state, load_seen_ids
 
 from news.news_scraper import fetch_news
@@ -27,7 +27,7 @@ from weather_forecast.weather import (
 )
 from weather_forecast.webcam import fetch_webcam_snapshot
 
-from notifier import notify_new_listings, delete_sold_messages, send_news, send_weather
+from notifier import notify_new_listings, delete_sold_messages, send_news, send_weather, format_price_delta
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -118,8 +118,16 @@ async def cmd_listings(update, context) -> None:
 
     lines = ["🎟️ *Annunci disponibili sul Ticket Exchange:*\n"]
     for listing in listings:
+        delta_str = ""
+        face_value = get_face_value(listing["product"])
+        try:
+            listing_price = float(listing["price"])
+        except (ValueError, TypeError):
+            listing_price = None
+        if listing_price is not None and face_value is not None:
+            delta_str = f"\n  📊 {format_price_delta(listing_price, face_value)}"
         lines.append(
-            f"• {listing['product']} — *€ {listing['price']}*\n"
+            f"• {listing['product']} — *€ {listing['price']}*{delta_str}\n"
             f"  [Vedi dettaglio]({listing['url']})"
         )
 

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:brutalassault.cz)",
+      "Bash(python -c \"from tickets.ticket_scraper import get_face_value, FACE_VALUE_PRICES; print\\('OK'\\); print\\(get_face_value\\('BA 2026 natural stand [e-ticket]'\\)\\); print\\(get_face_value\\('first edition BA 2026 festival pass [e-ticket]'\\)\\); print\\(get_face_value\\('BA 2026 festival pass - voucher for juniors 13-17,99 y.o. [e-voucher]'\\)\\); print\\(get_face_value\\('BA 2026 VIP lounge RIGHT [e-ticket]'\\)\\)\")",
+      "PowerShell(Get-Command python3, python, py -ErrorAction SilentlyContinue)",
+      "Bash(py -c \"from tickets.ticket_scraper import get_face_value; print\\('Match tests:'\\); tests = [\\('BA 2026 natural stand [e-ticket]', 34.0\\), \\('first edition BA 2026 festival pass [e-ticket]', 216.66\\), \\('second edition BA 2026 festival pass [e-ticket]', 216.66\\), \\('BA 2026 festival pass [e-ticket]', 216.66\\), \\('BA 2026 VIP lounge RIGHT [e-ticket]', 85.0\\), \\('BA 2026 parking 666 - car/van/caravan up to 3,5 t [e-ticket]', 21.99\\), \\('BA 2026 festival pass - voucher for juniors 13-17,99 y.o. [e-voucher]', 85.0\\), \\('BA 2026 locker box with charging - camp DAGON', 39.99\\)]; [print\\(f'  {p}: {get_face_value\\(p\\)} \\(expected {e}\\) {\\\\\"OK\\\\\" if get_face_value\\(p\\) == e else \\\\\"FAIL\\\\\"}'\\) for p, e in tests]\")",
+      "Bash(py -c ' *)"
+    ]
+  }
+}
