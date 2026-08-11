@@ -1,12 +1,30 @@
+import logging
+import os
 import httpx
 from datetime import datetime, date, timedelta
+
+logger = logging.getLogger(__name__)
 
 LATITUDE = 50.3567
 LONGITUDE = 15.9183
 CITY_NAME = "Jaroměř, CZ"
 
-FESTIVAL_START = date(2026, 8, 5)
-FESTIVAL_END = date(2026, 8, 8)
+def _festival_date(env_var: str, default: date) -> date:
+    """Data del festival, sovrascrivibile da ambiente (formato YYYY-MM-DD)."""
+    raw = os.getenv(env_var)
+    if not raw:
+        return default
+    try:
+        return datetime.strptime(raw.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        logger.warning(f"{env_var}='{raw}' non è una data valida (YYYY-MM-DD): uso {default}.")
+        return default
+
+
+# Aggiornare a ogni edizione (o impostare FESTIVAL_START / FESTIVAL_END nell'ambiente):
+# fuori da questo periodo il report meteo automatico resta silente.
+FESTIVAL_START = _festival_date("FESTIVAL_START", date(2026, 8, 5))
+FESTIVAL_END = _festival_date("FESTIVAL_END", date(2026, 8, 8))
 
 WMO_CODES = {
     0: "☀️ Sereno", 1: "🌤️ Prevalentemente sereno", 2: "⛅ Parzialmente nuvoloso",
@@ -18,8 +36,34 @@ WMO_CODES = {
     95: "⛈️ Temporale", 96: "⛈️ Temporale con grandine", 99: "⛈️ Temporale forte",
 }
 
+# Nomi dei giorni in italiano: strftime("%A") dipende dal locale del container
+# (su Fly.io è C/POSIX e produce "Tuesday" invece di "Martedì").
+GIORNI_IT = [
+    "Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica",
+]
+
+MESI_IT = [
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+]
+
+
+def format_day(giorno: date) -> str:
+    """Es. 'Venerdì 07/08' — indipendente dal locale di sistema."""
+    return f"{GIORNI_IT[giorno.weekday()]} {giorno.strftime('%d/%m')}"
+
+
 def days_until_festival() -> int:
     return (FESTIVAL_START - date.today()).days
+
+def festival_window_open() -> bool:
+    """
+    True se oggi il report meteo automatico va pubblicato: nei 15 giorni che
+    precedono il festival e per tutta la sua durata.
+    """
+    days_to_end = (FESTIVAL_END - date.today()).days
+    return days_to_end >= 0 and days_until_festival() <= 15
+
 
 def festival_dates() -> list[date]:
     delta = (FESTIVAL_END - FESTIVAL_START).days
@@ -59,11 +103,14 @@ async def fetch_weather_festival() -> dict | None:
     days_to_end = (FESTIVAL_END - today).days
 
     if days_to_end < 0:
+        logger.info(f"Festival terminato il {FESTIVAL_END}: nessun report meteo.")
         return None  # Festival passato
     if giorni > 15:
+        logger.info(f"Mancano {giorni} giorni al festival: report meteo non ancora attivo.")
         return None  # Troppo presto
 
-    forecast_days = min(days_to_end + 1, 16)
+    # Open-Meteo accetta forecast_days tra 1 e 16
+    forecast_days = max(1, min(days_to_end + 1, 16))
     return await _fetch(forecast_days=forecast_days)
 
 def format_weather_command(data: dict) -> str:
@@ -84,7 +131,7 @@ def format_weather_command(data: dict) -> str:
 
     for i, date_str in enumerate(daily["time"]):
         fest_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        day_name = fest_date.strftime("%A %d/%m").lstrip("0").capitalize()
+        day_name = format_day(fest_date)
 
         # Evidenzia i giorni del festival
         is_festival = FESTIVAL_START <= fest_date <= FESTIVAL_END
@@ -119,15 +166,15 @@ def format_weather_festival(data: dict) -> str:
     giorni = days_until_festival()
     if giorni > 0:
         header = (
-            f"🤘 <b>Meteo Brutal Assault 2026</b>\n"
+            f"🤘 <b>Meteo Brutal Assault {FESTIVAL_START.year}</b>\n"
             f"📍 {CITY_NAME} — "
             f"{FESTIVAL_START.strftime('%d').lstrip('0')}-"
-            f"{FESTIVAL_END.strftime('%d').lstrip('0')} agosto\n"
+            f"{FESTIVAL_END.strftime('%d').lstrip('0')} {MESI_IT[FESTIVAL_END.month - 1]}\n"
             f"⏳ Mancano <b>{giorni} giorni</b>!\n"
         )
     else:
         header = (
-            f"🤘 <b>Meteo Brutal Assault 2026</b>\n"
+            f"🤘 <b>Meteo Brutal Assault {FESTIVAL_START.year}</b>\n"
             f"📍 {CITY_NAME}\n"
             f"🔥 <b>È in corso!</b>\n"
         )
@@ -138,7 +185,7 @@ def format_weather_festival(data: dict) -> str:
         if fest_date not in date_index:
             continue
         i = date_index[fest_date]
-        day_name = fest_date.strftime("%A %d/%m").lstrip("0").capitalize()
+        day_name = format_day(fest_date)
         code = daily["weathercode"][i]
         desc = WMO_CODES.get(code, "❓ N/D")
         t_max = daily["temperature_2m_max"][i]

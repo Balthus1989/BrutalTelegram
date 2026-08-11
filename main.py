@@ -8,26 +8,28 @@ import asyncio
 import io
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application, CommandHandler
 
 from config import load_config
 from tickets.ticket_scraper import fetch_listings, get_face_value
-from tickets.ticket_state import load_state, save_state, load_seen_ids
+from tickets.ticket_state import STATE_FILE, load_state, save_state, make_record
 
 from news.news_scraper import fetch_news
 from news.news_state import load_seen, save_seen
 
 from weather_forecast.weather import (
     fetch_weather_command,
-    fetch_weather_festival,
+    festival_window_open,
     format_weather_command,
-    format_weather_festival,
-    days_until_festival,
 )
+from weather_forecast.weather_state import load_last_report_date, save_last_report_date
 from weather_forecast.webcam import fetch_webcam_snapshot
 
-from notifier import notify_new_listings, delete_sold_messages, send_news, send_weather, format_price_delta
+from notifier import notify_new_listings, resolve_sold_messages, send_news, send_weather, format_price_delta
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -37,6 +39,18 @@ logger = logging.getLogger(__name__)
 
 # Intervallo di polling in minuti
 POLL_INTERVAL_MINUTES = 5
+
+# Cicli consecutivi in cui un annuncio deve risultare assente prima di considerarlo venduto
+# (protegge da pagine caricate parzialmente o da risposte incomplete del sito).
+MISSING_POLLS_BEFORE_SOLD = 2
+
+# Dopo questi tentativi falliti si smette di ritentare la rimozione del messaggio
+MAX_DELETE_ATTEMPTS = 10
+
+# Report meteo automatico: ora locale del festival e frequenza dei tentativi
+FESTIVAL_TZ = ZoneInfo("Europe/Prague")
+WEATHER_REPORT_HOUR = 8
+WEATHER_CHECK_MINUTES = 15
 
 
 async def check_exchange(app: Application, chat_id: str, topic_id: int = None) -> None:
@@ -48,36 +62,68 @@ async def check_exchange(app: Application, chat_id: str, topic_id: int = None) -
         logger.warning("Impossibile recuperare i listing. Riprovo al prossimo ciclo.")
         return
 
-    state = load_state()  # { listing_id -> message_id }
+    state = load_state()  # { listing_id -> record }
     current_ids = {listing["id"] for listing in listings}
     known_ids = set(state.keys())
 
     # Annunci nuovi: presenti ora ma non ancora tracciati
     new_listings = [l for l in listings if l["id"] not in known_ids]
 
-    # Annunci venduti: erano tracciati ma non compaiono più
-    sold_ids = known_ids - current_ids
-    sold_listings = {lid: state[lid] for lid in sold_ids if state[lid] is not None}
-
     # Notifica nuovi annunci
     if new_listings:
         logger.info(f"Trovati {len(new_listings)} nuovi annunci.")
         sent = await notify_new_listings(app.bot, chat_id, new_listings, topic_id)
-        for listing_id, message_id in sent.items():
-            state[listing_id] = message_id
+        for listing in new_listings:
+            message_id = sent.get(listing["id"])
+            if message_id is None:
+                # Invio fallito: non tracciare, così verrà ritentato al prossimo ciclo
+                continue
+            state[listing["id"]] = make_record(listing, message_id, chat_id)
     else:
         logger.info("Nessun nuovo annuncio.")
 
-    # Elimina messaggi dei biglietti venduti
-    if sold_listings:
-        logger.info(f"{len(sold_listings)} biglietti venduti — elimino i messaggi.")
-        await delete_sold_messages(app.bot, chat_id, sold_listings)
-        for listing_id in sold_ids:
+    # Annuncio ricomparso (o mai scomparso): azzera il contatore delle assenze
+    for listing_id in current_ids & known_ids:
+        if state[listing_id].get("missing_count"):
+            state[listing_id]["missing_count"] = 0
+
+    # Annunci assenti dalla pagina: candidati venduti dopo N cicli consecutivi
+    sold_ids = set()
+    for listing_id in known_ids - current_ids:
+        record = state[listing_id]
+        record["missing_count"] = record.get("missing_count", 0) + 1
+        if record["missing_count"] >= MISSING_POLLS_BEFORE_SOLD:
+            sold_ids.add(listing_id)
+        else:
+            logger.info(
+                f"Annuncio {listing_id} non più visibile "
+                f"({record['missing_count']}/{MISSING_POLLS_BEFORE_SOLD}): attendo conferma."
+            )
+
+    if sold_ids:
+        logger.info(f"{len(sold_ids)} biglietti venduti — rimuovo i messaggi.")
+        resolved, retry = await resolve_sold_messages(
+            app.bot, {lid: state[lid] for lid in sold_ids}, chat_id
+        )
+        for listing_id in resolved:
             state.pop(listing_id, None)
+        for listing_id in retry:
+            record = state[listing_id]
+            record["delete_attempts"] = record.get("delete_attempts", 0) + 1
+            if record["delete_attempts"] >= MAX_DELETE_ATTEMPTS:
+                logger.error(
+                    f"Rinuncio a rimuovere il messaggio {record.get('message_id')} "
+                    f"dell'annuncio {listing_id} dopo {record['delete_attempts']} tentativi."
+                )
+                state.pop(listing_id, None)
     else:
         logger.info("Nessun biglietto venduto.")
 
-    save_state(state)
+    if not save_state(state):
+        logger.error(
+            "Stato non salvato: al prossimo ciclo gli annunci potrebbero essere "
+            "ri-notificati e i messaggi venduti non più eliminabili."
+        )
 
 
 async def cmd_start(update, context) -> None:
@@ -95,12 +141,17 @@ async def cmd_start(update, context) -> None:
 
 
 async def cmd_status(update, context) -> None:
-    seen_ids = load_seen_ids()
-    await update.message.reply_text(
-        f"✅ Bot attivo e funzionante.\n"
-        f"🎟️ Annunci tracciati: {len(seen_ids)}\n"
+    state = load_state()
+    pendenti = sum(1 for r in state.values() if r.get("delete_attempts"))
+    righe = [
+        "✅ Bot attivo e funzionante.",
+        f"🎟️ Annunci tracciati: {len(state)}",
         f"🔄 Controllo ogni {POLL_INTERVAL_MINUTES} minuti.",
-    )
+        f"💾 Stato: {STATE_FILE}",
+    ]
+    if pendenti:
+        righe.append(f"⚠️ Messaggi venduti in attesa di rimozione: {pendenti}")
+    await update.message.reply_text("\n".join(righe))
 
 
 async def cmd_listings(update, context) -> None:
@@ -208,6 +259,43 @@ async def check_news(app: Application, chat_id: str, news_topic_id: int) -> None
 
 
 
+async def run_job(name: str, func, *args) -> None:
+    """
+    Esegue un job dello scheduler isolandone gli errori: senza questo wrapper
+    un'eccezione (es. topic inesistente) fa fallire il job in silenzio.
+    """
+    try:
+        await func(*args)
+    except Exception as e:
+        logger.exception(f"Job '{name}' terminato con errore: {e}")
+
+
+async def weather_tick(app: Application, chat_id: str, topic_id: int = None) -> None:
+    """
+    Pubblica il report meteo giornaliero, una sola volta al giorno.
+
+    Viene eseguito periodicamente invece di una sola volta alle 08:00: se il bot
+    era spento o l'invio è fallito a quell'ora (riavvio, deploy, errore di rete),
+    il report viene recuperato al primo tentativo utile della giornata.
+    """
+    if not festival_window_open():
+        return
+
+    now = datetime.now(FESTIVAL_TZ)
+    if now.hour < WEATHER_REPORT_HOUR:
+        return
+
+    today = now.date().isoformat()
+    if load_last_report_date() == today:
+        return
+
+    logger.info(f"Pubblico il report meteo del {today}...")
+    if await send_weather(app, chat_id, topic_id):
+        save_last_report_date(today)
+    else:
+        logger.warning("Report meteo non pubblicato: ritento al prossimo ciclo.")
+
+
 async def main() -> None:
     config = load_config()
 
@@ -224,30 +312,31 @@ async def main() -> None:
     scheduler = AsyncIOScheduler()
 
     scheduler.add_job(
-        check_exchange,
+        run_job,
         trigger="interval",
         minutes=POLL_INTERVAL_MINUTES,
-        args=[app, config["chat_id"], config["topic_id"]],
+        args=["exchange_poll", check_exchange, app, config["chat_id"], config["topic_id"]],
         id="exchange_poll",
         replace_existing=True,
     )
 
     scheduler.add_job(
-        check_news,
+        run_job,
         trigger="interval",
         minutes=POLL_INTERVAL_MINUTES,
-        args=[app, config["chat_id"], config["news_topic_id"]],
+        args=["news_check", check_news, app, config["chat_id"], config["news_topic_id"]],
         id="news_check",
         replace_existing=True,
     )
 
+    # Il report meteo è schedulato a intervalli e non come cron alle 08:00:
+    # weather_tick pubblica una sola volta al giorno e recupera l'invio se
+    # l'orario previsto è stato mancato (riavvio del bot, deploy, errore di rete).
     scheduler.add_job(
-        send_weather,
-        trigger="cron",
-        hour=8,
-        minute=0,
-        timezone="Europe/Prague",
-        args=[app, config["chat_id"], config["weather_topic_id"]],
+        run_job,
+        trigger="interval",
+        minutes=WEATHER_CHECK_MINUTES,
+        args=["daily_weather", weather_tick, app, config["chat_id"], config["weather_topic_id"]],
         id="daily_weather",
         replace_existing=True,
     )
@@ -257,8 +346,9 @@ async def main() -> None:
 
     # Esegui subito un primo controllo all'avvio
     async with app:
-        await check_exchange(app, config["chat_id"], config["topic_id"])
-        await check_news(app, config["chat_id"], config["news_topic_id"])
+        await run_job("exchange_poll", check_exchange, app, config["chat_id"], config["topic_id"])
+        await run_job("news_check", check_news, app, config["chat_id"], config["news_topic_id"])
+        await run_job("daily_weather", weather_tick, app, config["chat_id"], config["weather_topic_id"])
         await app.start()
         await app.updater.start_polling()
         logger.info("Bot in ascolto. Premi Ctrl+C per fermare.")

@@ -70,12 +70,23 @@ async def fetch_listings() -> Optional[list[dict]]:
         return None
 
 
-def parse_listings(html: str) -> list[dict]:
+# Testi che indicano un mercato legittimamente vuoto (non un errore di parsing)
+CLOSED_MARKERS = (
+    "market is closed",
+    "xchange is closed",
+    "no tickets",
+)
+
+
+def parse_listings(html: str) -> Optional[list[dict]]:
     """
     Parsa l'HTML della pagina xchange ed estrae gli annunci.
 
     Returns:
-        Lista di dict con chiavi: id, product, price, url
+        Lista di dict con chiavi: id, product, price, url.
+        Lista vuota se il mercato è chiuso o senza annunci.
+        None se la struttura della pagina non è riconoscibile: in quel caso il
+        chiamante NON deve dedurre che tutti gli annunci tracciati siano venduti.
     """
     soup = BeautifulSoup(html, "html.parser")
     listings = []
@@ -88,8 +99,15 @@ def parse_listings(html: str) -> list[dict]:
             break
 
     if not table:
-        logger.warning("Tabella 'Tickets exchange' non trovata nella pagina.")
-        return listings
+        page_text = soup.get_text(" ", strip=True).lower()
+        if any(marker in page_text for marker in CLOSED_MARKERS):
+            logger.info("Mercato Xchange chiuso o senza annunci.")
+            return []
+        logger.warning(
+            "Tabella 'Tickets exchange' non trovata nella pagina: struttura non riconosciuta, "
+            "ciclo saltato per non eliminare messaggi ancora validi."
+        )
+        return None
 
     for row in table.find_all("tr"):
         cells = row.find_all("td")

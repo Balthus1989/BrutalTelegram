@@ -8,6 +8,11 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+# Caricato subito all'import: altri moduli (es. weather.py, storage.py) leggono
+# variabili d'ambiente al momento dell'import, prima che main chiami load_config().
+# Su Fly.io il file .env non esiste e le variabili arrivano dall'ambiente.
+load_dotenv(override=False)
+
 
 def load_config() -> dict:
     """
@@ -21,7 +26,7 @@ def load_config() -> dict:
     Returns:
         Dict con chiavi: token, chat_id, topic_id
     """
-    load_dotenv(override=False)  # .env opzionale — su Railway le variabili arrivano dall'ambiente
+    load_dotenv(override=False)  # .env opzionale — su Fly.io le variabili arrivano dall'ambiente
 
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -46,11 +51,24 @@ def load_config() -> dict:
             f"  TELEGRAM_WEATHER_TOPIC_ID=id_del_topic_weather"
         )
 
-    logger.info(f"Configurazione caricata. Chat ID: {chat_id} — Topic ID: {topic_id or 'non impostato'}")
-    return {
+    config = {
         "token": token,
         "chat_id": chat_id,
         "topic_id": int(topic_id) if topic_id else None,
         "news_topic_id": int(news_topic_id) if news_topic_id else None,
-        "weather_topic_id": int(weather_topic_id) if weather_topic_id else None,
+        # Se il topic meteo non è configurato, il report segue le news
+        # (e in mancanza di entrambi finisce nel topic General).
+        "weather_topic_id": (
+            int(weather_topic_id) if weather_topic_id
+            else int(news_topic_id) if news_topic_id
+            else None
+        ),
     }
+
+    logger.info(
+        f"Configurazione caricata. Chat ID: {chat_id} — "
+        f"topic ticket: {config['topic_id'] or 'General'}, "
+        f"topic news: {config['news_topic_id'] or 'General'}, "
+        f"topic meteo: {config['weather_topic_id'] or 'General'}"
+    )
+    return config
