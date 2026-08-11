@@ -11,12 +11,21 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
 - Polling automatico ogni 5 minuti sulla pagina del Ticket Exchange
 - Polling automatico ogni 5 minuti sulla pagina delle news, con traduzione in italiano
 - Notifica immediata nel gruppo Telegram per ogni nuovo annuncio e ogni nuova news
-- Eliminazione automatica dei messaggi per biglietti venduti
-- Persistenza dello stato per evitare notifiche duplicate (biglietti e news)
+- Eliminazione automatica dei messaggi per biglietti venduti, con fallback: se Telegram
+  non consente l'eliminazione (messaggio più vecchio di 48 ore o bot senza permessi di
+  amministratore) il messaggio viene riscritto come "VENDUTO"
+- Un annuncio è considerato venduto solo dopo 2 cicli consecutivi di assenza, e un
+  errore di lettura della pagina non provoca mai eliminazioni di massa
+- Persistenza dello stato su volume Fly.io (`/data`) con scrittura atomica, per evitare
+  notifiche duplicate e messaggi "orfani" dopo un riavvio
 - Supporto per Telegram Forum (topic mode), con topic separati per ticket, news e meteo
 - Previsioni meteo 7 giorni per Jaroměř tramite API Open-Meteo (gratuita, senza API key)
-- Report meteo automatico giornaliero alle 08:00 (fuso Europe/Prague) nei 15 giorni prima del festival e durante lo stesso, con previsioni filtrate sui soli giorni del festival (5-8 agosto 2026)
-- Snapshot dalla webcam live di Josefov allegata ai messaggi meteo
+- Report meteo automatico una volta al giorno dalle 08:00 (fuso Europe/Prague) nei 15 giorni
+  prima del festival e durante lo stesso, con previsioni filtrate sui soli giorni del
+  festival; se il bot era spento o l'invio è fallito, il report viene recuperato più tardi
+  nella stessa giornata
+- Snapshot dalla webcam live di Josefov allegata ai messaggi meteo, con fallback a solo
+  testo se l'immagine non è pubblicabile
 
 ## Comandi
 
@@ -60,7 +69,21 @@ TELEGRAM_NEWS_TOPIC_ID=id_del_topic_news
 TELEGRAM_WEATHER_TOPIC_ID=id_del_topic_meteo
 ```
 
+Variabili opzionali:
+
+| Variabile | Default | Descrizione |
+|-----------|---------|-------------|
+| `FESTIVAL_START` | `2026-08-05` | Primo giorno del festival (`YYYY-MM-DD`) |
+| `FESTIVAL_END` | `2026-08-08` | Ultimo giorno del festival (`YYYY-MM-DD`) |
+| `BOT_DATA_DIR` | `/data` | Directory dei file di stato (volume Fly.io) |
+
 > **Nota sui topic id nei forum Telegram:** il topic "General" non ha un thread id valido. Se vuoi pubblicare nel General, lascia il topic id vuoto o impostalo a `1` — il bot omettera automaticamente il `message_thread_id`. Per topic reali, apri un messaggio del topic, clicca "Copia link" e il numero dopo `/c/<chat_id>/` e il thread id da usare.
+>
+> Se `TELEGRAM_WEATHER_TOPIC_ID` non e impostato, il report meteo viene pubblicato nello stesso topic delle news.
+
+> **Permessi del bot:** per eliminare i messaggi dei biglietti venduti il bot deve essere amministratore del gruppo con il permesso "Delete messages". Senza quel permesso Telegram rifiuta l'eliminazione dei messaggi piu vecchi di 48 ore e il bot si limita a riscriverli come "VENDUTO".
+
+> **Fine edizione:** al termine del festival aggiorna `FESTIVAL_START` / `FESTIVAL_END` (o i valori di default in `weather_forecast/weather.py`), altrimenti il report meteo automatico resta silente.
 
 ## Avvio
 
@@ -68,13 +91,24 @@ TELEGRAM_WEATHER_TOPIC_ID=id_del_topic_meteo
 uv run main.py
 ```
 
+## Test
+
+```bash
+python test_bot.py
+```
+
+Test funzionali offline (bot Telegram e siti simulati) su: notifica dei nuovi annunci,
+conferma della vendita, eliminazione dei messaggi con i vari fallback, resistenza agli
+errori di scraping e pubblicazione del report meteo.
+
 ## Struttura
 
 ```
 BrutalTelegram/
 ├── main.py                        # Entry point, scheduler, comandi bot
 ├── config.py                      # Caricamento configurazione da .env
-├── notifier.py                    # Formattazione e invio messaggi Telegram (ticket + news)
+├── storage.py                     # Directory dati persistente (volume Fly.io /data)
+├── notifier.py                    # Formattazione e invio messaggi Telegram (ticket + news + meteo)
 ├── translator.py                  # Traduzione testi in italiano (Google Translate)
 ├── tickets/
 │   ├── ticket_scraper.py          # Fetch e parsing della pagina xchange
@@ -84,7 +118,9 @@ BrutalTelegram/
 │   └── news_state.py              # Persistenza stato news (seen_news.json)
 ├── weather_forecast/
 │   ├── weather.py                 # Previsioni meteo via Open-Meteo API
+│   ├── weather_state.py           # Data dell'ultimo report meteo (weather_state.json)
 │   └── webcam.py                  # Snapshot webcam live da Josefov
+├── test_bot.py                    # Test funzionali offline
 └── .env                           # Configurazione (non tracciato da git)
 ```
 
