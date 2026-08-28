@@ -663,6 +663,89 @@ run_news(FakeBot())
 check("news pubblicata al tentativo successivo", ARTICOLO["id"] in news_state.load_seen())
 check("contatore azzerato dopo la pubblicazione", news_state.load_failures() == {})
 
+# ------------------------------------------------------------- traduzione
+import translator
+
+INGLESE = (
+    "As every year, a lot of items have accumulated again this year that you likely "
+    "left behind in a metal haze, lost in the mosh pit, or misplaced in any other way. "
+    "You can find them at this link: https://drive.google.com/drive/folders/1_rEvNhDxpd "
+    "If you spot something in the photos that belongs to you, please contact us."
+)
+ITALIANO = "Come ogni anno si sono accumulati oggetti smarriti: li trovate a questo link."
+
+
+def usa_backend(*backend):
+    """Sostituisce i servizi di traduzione con quelli finti passati."""
+    translator._backends = lambda: tuple(backend)
+
+
+def ko(errore):
+    def _backend(testo):
+        raise errore
+    return _backend
+
+
+print("\n=== 37. Traduzione: il testo lungo viene spezzato sotto il limite ===")
+lungo = INGLESE * 4
+pezzi = translator.split_chunks(lungo, limite=200)
+check("nessun blocco oltre il limite", all(len(p) <= 200 for p in pezzi))
+check("nessuna parola troncata", all(p == p.strip() for p in pezzi))
+check("testo integro una volta ricomposto", " ".join(pezzi).split() == lungo.split())
+check("testo corto non spezzato", translator.split_chunks("Poche parole.", 200) == ["Poche parole."])
+
+print("\n=== 38. Traduzione: primo servizio ko -> si passa al secondo ===")
+usa_backend(("Google", ko(RuntimeError("No translation was found"))),
+            ("MyMemory", lambda testo: ITALIANO))
+check("news tradotta dal servizio di riserva", translator.translate(INGLESE) == ITALIANO)
+
+print("\n=== 39. Traduzione: testo restituito uguale all'originale -> non è una traduzione ===")
+# translate.google.com/m sotto throttling rimanda indietro il testo di partenza
+# invece di fallire: e' cosi' che le news arrivavano nel gruppo in inglese.
+usa_backend(("Google", lambda testo: testo), ("MyMemory", lambda testo: ITALIANO))
+check("scartata la non-traduzione, usato il secondo servizio", translator.translate(INGLESE) == ITALIANO)
+usa_backend(("Google", lambda testo: testo), ("MyMemory", ko(RuntimeError("quota"))))
+check("titolo corto identico accettato", translator.translate("Lost and Found") == "Lost and Found")
+
+print("\n=== 40. Traduzione: tutti i servizi ko -> testo originale, news pubblicata ===")
+usa_backend(("Google", ko(RuntimeError("429"))), ("MyMemory", ko(RuntimeError("timeout"))))
+check("nessuna eccezione propagata", translator.translate(INGLESE) == INGLESE)
+check("testo vuoto gestito", translator.translate("") == "")
+
+print("\n=== 41. MyMemory: quota esaurita -> non finisce nel gruppo ===")
+class FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+QUOTA_FINITA = {
+    "responseStatus": 200,
+    "quotaFinished": True,
+    "responseData": {"translatedText":
+        "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY."},
+}
+translator.requests = SimpleNamespace(get=lambda *a, **kw: FakeResponse(QUOTA_FINITA))
+usa_backend(("MyMemory", translator._translate_mymemory))
+check("avviso di quota non pubblicato", translator.translate(INGLESE) == INGLESE)
+
+ERRORE_API = {"responseStatus": 403, "responseDetails": "INVALID LANGUAGE PAIR",
+              "responseData": {"translatedText": "boh"}}
+translator.requests = SimpleNamespace(get=lambda *a, **kw: FakeResponse(ERRORE_API))
+check("errore dell'API non pubblicato", translator.translate(INGLESE) == INGLESE)
+
+TRADOTTO = {"responseStatus": "200", "quotaFinished": False,
+            "responseData": {"translatedText": ITALIANO}}
+translator.requests = SimpleNamespace(get=lambda *a, **kw: FakeResponse(TRADOTTO))
+check("risposta valida usata", translator.translate(INGLESE).startswith(ITALIANO))
+
+import requests as _requests
+translator.requests = _requests   # ripristina il modulo vero per i test successivi
+
 print("\n=== 21. Scrittura atomica: nessun file temporaneo residuo ===")
 leftovers = list(ticket_state.STATE_FILE.parent.glob(".seen_tickets.*.tmp"))
 leftovers += list(availability_state.AVAILABILITY_STATE_FILE.parent.glob(".ticket_availability.*.tmp"))
