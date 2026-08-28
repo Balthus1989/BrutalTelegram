@@ -751,6 +751,84 @@ leftovers = list(ticket_state.STATE_FILE.parent.glob(".seen_tickets.*.tmp"))
 leftovers += list(availability_state.AVAILABILITY_STATE_FILE.parent.glob(".ticket_availability.*.tmp"))
 check("nessun .tmp residuo", leftovers == [])
 
+print("\n=== 42. Versioning: numero, changelog e comando /version ===")
+import release, version
+
+check("bump patch", release.bump("1.0.0", "patch") == "1.0.1")
+check("bump minor azzera la patch", release.bump("1.4.7", "minor") == "1.5.0")
+check("bump major azzera minor e patch", release.bump("1.4.7", "major") == "2.0.0")
+try:
+    release.bump("1.2", "patch")
+    check("versione malformata rifiutata", False)
+except ValueError:
+    check("versione malformata rifiutata", True)
+
+# La versione del file e quella del CHANGELOG devono coincidere: e' l'unico modo
+# per sapere quale codice sta girando su Fly.io, dove il repository non c'e'.
+check("la versione in esecuzione e annotata nel CHANGELOG", version.release_notes() != [])
+check("il numero e semanticamente valido", release.parse_version(version.__version__))
+
+CHANGELOG_FINTO = """# Changelog
+
+## [Non rilasciato]
+
+### Aggiunto
+
+- Comando /version
+- Alert sui biglietti, con soglie
+  scritte su due righe
+
+## [1.0.0] - 2026-08-28
+
+- Prima versione
+"""
+
+nuovo, voci = release.roll_changelog(CHANGELOG_FINTO, "1.1.0", "2026-09-01")
+check("le voci passano nella nuova versione", voci == ["Comando /version", "Alert sui biglietti, con soglie"])
+check("sezione della nuova versione creata", "## [1.1.0] - 2026-09-01" in nuovo)
+check("le voci non restano in Non rilasciato",
+      nuovo.index("Comando /version") > nuovo.index("## [1.1.0]"))
+check("Non rilasciato resta pronto per il lavoro dopo", "## [Non rilasciato]" in nuovo)
+check("le versioni precedenti restano", "## [1.0.0] - 2026-08-28" in nuovo)
+check("le voci della nuova versione sono leggibili dal bot",
+      version.parse_release_notes(nuovo, "1.1.0")[0] == "Comando /version")
+check("le righe spezzate vengono ricomposte",
+      version.parse_release_notes(nuovo, "1.1.0")[1].endswith("con soglie scritte su due righe"))
+check("nessuna voce residua in Non rilasciato",
+      version.parse_release_notes(nuovo, "Non rilasciato") == [])
+
+# Un secondo rilascio sopra il primo non deve inglobare le voci gia' pubblicate
+_, voci_vuote = release.roll_changelog(nuovo, "1.1.1", "2026-09-02")
+check("rilascio senza novita non ruba le voci precedenti", voci_vuote == [])
+
+try:
+    release.roll_changelog("# Changelog\n\n## [1.0.0] - 2026-08-28\n", "1.1.0", "2026-09-01")
+    check("CHANGELOG senza Non rilasciato rifiutato", False)
+except ValueError:
+    check("CHANGELOG senza Non rilasciato rifiutato", True)
+
+sorgente = 'x = 1\n__version__ = "1.0.0"\n__release_date__ = "2026-08-28"\n'
+aggiornato = release.rewrite_version_file(sorgente, "1.1.0", "2026-09-01")
+check("version.py riscritto con numero e data",
+      '__version__ = "1.1.0"' in aggiornato and '__release_date__ = "2026-09-01"' in aggiornato)
+
+msg_version = FakeMessage()
+asyncio.run(main.cmd_version(SimpleNamespace(message=msg_version), None))
+risposta = msg_version.replies[0]
+check("/version mostra il numero", f"v{version.__version__}" in risposta["text"])
+check("/version mostra la data di rilascio", version.__release_date__ in risposta["text"])
+check("/version elenca le novita", "Novità di questa versione" in risposta["text"])
+check("/version inviato in HTML", risposta.get("parse_mode") == "HTML")
+check("nessun backtick del changelog nel messaggio", "`" not in risposta["text"])
+
+msg_status = FakeMessage()
+asyncio.run(main.cmd_status(SimpleNamespace(message=msg_status), None))
+check("/status riporta la versione", version.__version__ in msg_status.replies[0]["text"])
+
+msg_v_start = FakeMessage()
+asyncio.run(main.cmd_start(SimpleNamespace(message=msg_v_start), None))
+check("/start riporta la versione", f"v{version.__version__}" in msg_v_start.replies[0]["text"])
+
 print(f"\n===== {len(ok)} PASS, {len(fail)} FAIL =====")
 for f in fail:
     print("  FAILED:", f)

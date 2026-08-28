@@ -5,6 +5,7 @@ per ogni nuovo annuncio di vendita.
 """
 
 import asyncio
+import html
 import io
 
 import logging
@@ -16,6 +17,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler
 
 from config import load_config
+from version import __release_date__, __version__, release_notes
 from tickets.ticket_scraper import fetch_listings, get_face_value
 from tickets.ticket_state import STATE_FILE, load_state, save_state, make_record
 from tickets.availability_scraper import (
@@ -310,16 +312,39 @@ BOT_COMMANDS = [
     BotCommand("availability", "Biglietti ancora in vendita sul sito ufficiale"),
     BotCommand("news", "Ultime notizie di Brutal Assault"),
     BotCommand("weather", "Previsioni meteo per i giorni del festival"),
+    BotCommand("version", "Versione del bot e novità dell'ultimo rilascio"),
 ]
 
 
 async def cmd_start(update, context) -> None:
     elenco = "\n".join(f"/{c.command} - {c.description}" for c in BOT_COMMANDS)
     await update.message.reply_text(
-        "🤘 *Brutal Assault Italia Bot* attivo!\n\n"
+        f"🤘 *Brutal Assault Italia Bot* v{__version__} attivo!\n\n"
         "Monitoro il Ticket Exchange ufficiale e ti avviso appena esce un nuovo annuncio.\n\n"
         f"Comandi disponibili:\n{elenco}",
         parse_mode="Markdown",
+    )
+
+
+async def cmd_version(update, context) -> None:
+    """Versione in esecuzione e novità che ha portato."""
+    righe = [
+        f"🏷️ <b>Brutal Assault Italia Bot</b> v{__version__}",
+        f"Rilasciata il {__release_date__}",
+    ]
+
+    # Le novità vengono dal CHANGELOG: se il file manca nell'immagine, o la
+    # versione non è ancora annotata, il comando risponde comunque col numero.
+    # Le voci sono testo scritto a mano: passano per html.escape perché un "<"
+    # o una "&" di troppo farebbero fallire l'invio invece di pubblicare.
+    novita = release_notes()
+    if novita:
+        righe.append("")
+        righe.append("<b>Novità di questa versione:</b>")
+        righe += [f"• {html.escape(voce.replace('`', ''))}" for voce in novita[:10]]
+
+    await update.message.reply_text(
+        "\n".join(righe), parse_mode="HTML", disable_web_page_preview=True
     )
 
 
@@ -328,6 +353,7 @@ async def cmd_status(update, context) -> None:
     pendenti = sum(1 for r in state.values() if r.get("delete_attempts"))
     righe = [
         "✅ Bot attivo e funzionante.",
+        f"🏷️ Versione {__version__} (rilasciata il {__release_date__})",
         f"🎟️ Annunci tracciati: {len(state)}",
         f"🔄 Controllo ogni {POLL_INTERVAL_MINUTES} minuti.",
         f"💾 Stato: {STATE_FILE}",
@@ -552,6 +578,7 @@ async def main() -> None:
     app.add_handler(CommandHandler("availability", cmd_availability))
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("weather", cmd_weather))
+    app.add_handler(CommandHandler("version", cmd_version))
 
     # Scheduler per il polling.
     # misfire_grace_time: di default APScheduler scarta un job che parte con più
@@ -625,7 +652,10 @@ async def main() -> None:
         f"controllo ogni {AVAILABILITY_CHECK_MINUTES} minuti, alert a ogni "
         f"{ALERT_STEP}% nel topic ticket ({config['topic_id'] or 'General'})."
     )
-    logger.info("Avvio bot Brutal Assault Italia...")
+    logger.info(
+        f"Avvio bot Brutal Assault Italia v{__version__} "
+        f"(rilascio del {__release_date__})..."
+    )
     scheduler.start()
 
     # Esegui subito un primo controllo all'avvio

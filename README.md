@@ -49,6 +49,8 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   2 cicli consecutivi di assenza
 - Snapshot dalla webcam live di Josefov allegata ai messaggi meteo, con fallback a solo
   testo se l'immagine non è pubblicabile
+- Versione del bot tracciata e avanzata a ogni rilascio, con changelog consultabile dal
+  gruppo tramite `/version` (vedi [Versionamento e rilasci](#versionamento-e-rilasci))
 
 ## Comandi
 
@@ -60,6 +62,7 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
 | `/availability` | Percentuale di biglietti ancora in vendita sul sito ufficiale |
 | `/news` | Ultime notizie di Brutal Assault |
 | `/weather` | Previsioni meteo 7 giorni per Jaroměř con countdown al festival |
+| `/version` | Versione in esecuzione, data del rilascio e novità che ha portato |
 
 > **Menu dei comandi:** l'elenco che Telegram mostra digitando `/` non si aggiorna da solo. Il bot lo riscrive a ogni avvio con `set_my_commands()` a partire da `BOT_COMMANDS` in `main.py`, che alimenta anche il testo di `/start`: un comando aggiunto solo come `CommandHandler` funziona se digitato a mano ma resta invisibile nell'autocompletamento. I client Telegram tengono l'elenco in cache, quindi puo servire riaprire la chat per vederlo aggiornato.
 
@@ -131,11 +134,61 @@ conferma della vendita, eliminazione dei messaggi con i vari fallback, resistenz
 errori di scraping, pubblicazione del report meteo e alert sulla disponibilita dei
 biglietti (riepilogo iniziale, soglie del 5%, crolli multi-soglia, sold out, invii falliti).
 
+## Versionamento e rilasci
+
+Il bot ha un numero di versione ([versionamento semantico](https://semver.org/lang/it/))
+che avanza a ogni rilascio. La fonte di verità è `version.py`: il container non contiene
+il repository git (`.git/` è in `.dockerignore`), quindi quel file è l'unico modo per
+sapere quale codice sta girando su Fly.io. Il numero compare in `/version`, in `/start`,
+in `/status` e nei log all'avvio.
+
+Durante il lavoro, le modifiche si annotano sotto `## [Non rilasciato]` in
+[CHANGELOG.md](CHANGELOG.md). Al momento del rilascio:
+
+```bash
+python release.py patch
+```
+
+Lo script — `patch`, `minor` o `major`, oppure `--set X.Y.Z` per un numero deciso a mano:
+
+1. verifica che l'albero di lavoro sia pulito (un rilascio deve corrispondere a un commit
+   preciso) e che il tag non esista già;
+2. scrive il nuovo numero e la data in `version.py`;
+3. sposta le voci di `[Non rilasciato]` nella sezione della nuova versione, lasciando
+   `[Non rilasciato]` vuota per il lavoro successivo;
+4. crea il commit `Rilascio vX.Y.Z` e il tag annotato `vX.Y.Z`, con le novità nel
+   messaggio del tag.
+
+Push e deploy restano manuali:
+
+```bash
+git push --follow-tags
+```
+
+Quale parte avanzare:
+
+| Parte | Quando |
+|-------|--------|
+| `major` | cambia il comportamento atteso dal gruppo: comandi rimossi o rinominati, notifiche che smettono di arrivare, stato non più leggibile dalla versione precedente |
+| `minor` | nuove funzionalità compatibili: un comando in più, un nuovo tipo di alert |
+| `patch` | correzioni che non cambiano cosa fa il bot, solo che lo faccia |
+
+Opzioni utili: `--dry-run` mostra il numero nuovo e le voci che verrebbero spostate senza
+toccare nulla, `--no-commit` scrive i file lasciando commit e tag a te, `--allow-empty`
+rilascia anche senza voci nel changelog (di norma lo script si ferma: un rilascio senza
+novità annotate è quasi sempre una dimenticanza).
+
+Un rilascio senza voci nel CHANGELOG resta comunque visibile con `/version`, che mostra il
+numero anche quando non trova nulla da elencare.
+
 ## Struttura
 
 ```
 BrutalTelegram/
 ├── main.py                        # Entry point, scheduler, comandi bot
+├── version.py                     # Versione in esecuzione + lettura del CHANGELOG
+├── release.py                     # Avanzamento versione, CHANGELOG, commit e tag
+├── CHANGELOG.md                   # Novità di ogni versione rilasciata
 ├── config.py                      # Caricamento configurazione da .env
 ├── storage.py                     # Directory dati persistente (volume Fly.io /data)
 ├── notifier.py                    # Formattazione e invio messaggi Telegram (ticket + news + meteo)
