@@ -2,6 +2,7 @@
 Modulo per l'invio delle notifiche Telegram.
 """
 
+import asyncio
 import logging
 import io
 from telegram import Bot
@@ -23,6 +24,9 @@ from weather_forecast.webcam import fetch_webcam_snapshot
 from translator import translate
 
 logger = logging.getLogger(__name__)
+
+# Limite di Telegram per la caption di una foto (il testo di un messaggio arriva a 4096).
+MAX_CAPTION_LENGTH = 1024
 
 
 def thread_kwargs(topic_id) -> dict:
@@ -301,8 +305,10 @@ async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
     
     # Scrapa e traduce
     dettagli = await fetch_article(articolo["url"])
-    titolo_it = translate(articolo["titolo"])
-    testo_it = translate(dettagli["testo"])
+    # translate() usa requests (sincrono): eseguito nel loop bloccherebbe lo
+    # scheduler, facendo saltare i tick di ticket e meteo.
+    titolo_it = await asyncio.to_thread(translate, articolo["titolo"])
+    testo_it = await asyncio.to_thread(translate, dettagli["testo"])
     
     # Tronca il testo se troppo lungo (Telegram: max 1024 char per caption)
     testo_breve = testo_it[:900] + "..." if len(testo_it) > 900 else testo_it
@@ -354,6 +360,15 @@ async def send_weather_message(bot: Bot, chat_id: str, topic_id: int | None, tes
     kwargs = thread_kwargs(topic_id)
     snapshot = await fetch_webcam_snapshot()
 
+    # Telegram accetta al massimo 1024 caratteri di caption: oltre quel limite
+    # send_photo fallisce sempre e il meteo arriverebbe solo come testo.
+    if snapshot and len(testo) > MAX_CAPTION_LENGTH:
+        logger.info(
+            f"Report meteo di {len(testo)} caratteri: supera il limite di "
+            f"{MAX_CAPTION_LENGTH} per le caption, pubblico senza snapshot webcam."
+        )
+        snapshot = None
+
     if snapshot:
         try:
             await bot.send_photo(
@@ -385,14 +400,17 @@ async def send_weather_message(bot: Bot, chat_id: str, topic_id: int | None, tes
 
 # Report automatico — solo vicino al festival
 async def send_weather(app: Application, chat_id: str, topic_id: int = None) -> bool:
+    # Anche la formattazione sta nel try: un valore mancante nella risposta
+    # dell'API faceva risalire l'eccezione fino allo scheduler, che saltava il
+    # report senza che nei log comparisse nulla di riferibile al meteo.
     try:
         data = await fetch_weather_festival()
+        if data is None:
+            logger.info("Report meteo non previsto oggi (fuori dalla finestra del festival).")
+            return False
+        testo = format_weather_festival(data)
     except Exception as e:
-        logger.exception(f"Impossibile recuperare le previsioni per il report meteo: {e}")
+        logger.exception(f"Impossibile preparare il report meteo: {e}")
         return False
 
-    if data is None:
-        logger.info("Report meteo non previsto oggi (fuori dalla finestra del festival).")
-        return False
-
-    return await send_weather_message(app.bot, chat_id, topic_id, format_weather_festival(data))
+    return await send_weather_message(app.bot, chat_id, topic_id, testo)

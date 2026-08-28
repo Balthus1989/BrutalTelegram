@@ -9,7 +9,6 @@ import io
 
 import logging
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application, CommandHandler
@@ -22,6 +21,10 @@ from news.news_scraper import fetch_news
 from news.news_state import load_seen, save_seen
 
 from weather_forecast.weather import (
+    FESTIVAL_END,
+    FESTIVAL_START,
+    FESTIVAL_TZ,
+    REPORT_WINDOW_DAYS,
     fetch_weather_command,
     festival_window_open,
     format_weather_command,
@@ -48,7 +51,6 @@ MISSING_POLLS_BEFORE_SOLD = 2
 MAX_DELETE_ATTEMPTS = 10
 
 # Report meteo automatico: ora locale del festival e frequenza dei tentativi
-FESTIVAL_TZ = ZoneInfo("Europe/Prague")
 WEATHER_REPORT_HOUR = 8
 WEATHER_CHECK_MINUTES = 15
 
@@ -278,15 +280,24 @@ async def weather_tick(app: Application, chat_id: str, topic_id: int = None) -> 
     era spento o l'invio è fallito a quell'ora (riavvio, deploy, errore di rete),
     il report viene recuperato al primo tentativo utile della giornata.
     """
+    now = datetime.now(FESTIVAL_TZ)
+
+    # Ogni uscita anticipata è tracciata: senza questi log un report mancante
+    # era indistinguibile da un job che non era mai partito.
     if not festival_window_open():
+        logger.debug("Report meteo: fuori dalla finestra del festival, niente da pubblicare.")
         return
 
-    now = datetime.now(FESTIVAL_TZ)
     if now.hour < WEATHER_REPORT_HOUR:
+        logger.info(
+            f"Report meteo: a Praga sono le {now:%H:%M}, "
+            f"attendo le {WEATHER_REPORT_HOUR:02d}:00."
+        )
         return
 
     today = now.date().isoformat()
     if load_last_report_date() == today:
+        logger.debug(f"Report meteo del {today} già pubblicato.")
         return
 
     logger.info(f"Pubblico il report meteo del {today}...")
@@ -308,8 +319,17 @@ async def main() -> None:
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("weather", cmd_weather))
 
-    # Scheduler per il polling
-    scheduler = AsyncIOScheduler()
+    # Scheduler per il polling.
+    # misfire_grace_time: di default APScheduler scarta un job che parte con più
+    # di 1 secondo di ritardo. Scraping e traduzioni tengono occupato il loop ben
+    # oltre quella soglia, e i tick del meteo venivano saltati senza traccia.
+    scheduler = AsyncIOScheduler(
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 300,
+        }
+    )
 
     scheduler.add_job(
         run_job,
@@ -341,6 +361,14 @@ async def main() -> None:
         replace_existing=True,
     )
 
+    # Una data del festival sbagliata (o non aggiornata a fine edizione) rende il
+    # report meteo silente: meglio vederla nei log all'avvio.
+    logger.info(
+        f"Report meteo: festival {FESTIVAL_START} → {FESTIVAL_END}, "
+        f"pubblicazione dalle {WEATHER_REPORT_HOUR:02d}:00 (Europe/Prague) nei "
+        f"{REPORT_WINDOW_DAYS} giorni precedenti e durante — "
+        f"finestra attiva oggi: {'sì' if festival_window_open() else 'no'}."
+    )
     logger.info("Avvio bot Brutal Assault Italia...")
     scheduler.start()
 

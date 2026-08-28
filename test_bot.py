@@ -214,20 +214,24 @@ check("messaggio legacy eliminato usando chat_id di default", bot13.deleted == [
 # ------------------------------------------------------------------ meteo
 print("\n=== 14. Meteo: pubblicato nel topic General senza message_thread_id ===")
 reset_state()
+OGGI = weather.today()   # stesso fuso usato da weather_tick (Europe/Prague)
 FAKE_DATA = {"daily": {
-    "time": [(date.today() + timedelta(days=i)).isoformat() for i in range(4)],
+    "time": [(OGGI + timedelta(days=i)).isoformat() for i in range(4)],
     "weathercode": [0, 3, 61, 95],
     "temperature_2m_max": [28.0, 26.0, 22.0, 24.0],
     "temperature_2m_min": [14.0, 15.0, 13.0, 12.0],
     "precipitation_sum": [0.0, 0.2, 8.0, 3.0],
     "windspeed_10m_max": [10.0, 12.0, 30.0, 25.0],
 }}
-weather.FESTIVAL_START = date.today()
-weather.FESTIVAL_END = date.today() + timedelta(days=3)
+weather.FESTIVAL_START = OGGI
+weather.FESTIVAL_END = OGGI + timedelta(days=3)
 notifier.fetch_weather_festival = lambda: asyncio.sleep(0, result=FAKE_DATA)
 notifier.format_weather_festival = weather.format_weather_festival
 notifier.fetch_webcam_snapshot = lambda: asyncio.sleep(0, result=None)
 main.festival_window_open = weather.festival_window_open
+# I test girano a qualsiasi ora: senza questo, prima delle 08:00 di Praga
+# weather_tick uscirebbe subito e i controlli sul meteo fallirebbero tutti.
+main.WEATHER_REPORT_HOUR = 0
 
 botw = FakeBot()
 asyncio.run(main.weather_tick(fake_app(botw), CHAT, 1))   # topic General
@@ -269,13 +273,74 @@ botr = FakeBot()
 asyncio.run(main.weather_tick(fake_app(botr), CHAT, 1))
 check("ritentato con successo", len(botr.sent) == 1)
 
-print("\n=== 19. Meteo: fuori finestra -> niente ===")
-weather.FESTIVAL_START = date.today() + timedelta(days=200)
-weather.FESTIVAL_END = date.today() + timedelta(days=203)
+print("\n=== 19. Meteo: valori mancanti nell'API -> report pubblicato lo stesso ===")
+# Open-Meteo restituisce null per le giornate al limite dell'orizzonte del
+# modello: un None dentro le f-string faceva fallire l'intero report.
+BUCATA = {"daily": {
+    "time": FAKE_DATA["daily"]["time"],
+    "weathercode": [0, 3, None, 95],
+    "temperature_2m_max": [28.0, 26.0, None, 24.0],
+    "temperature_2m_min": [14.0, 15.0, 13.0, 12.0],
+    "precipitation_sum": [0.0, 0.2, None, 3.0],
+    "windspeed_10m_max": [10.0, 12.0, 30.0, None],
+}}
+notifier.fetch_weather_festival = lambda: asyncio.sleep(0, result=BUCATA)
+weather_state.WEATHER_STATE_FILE.unlink(missing_ok=True)
+botn = FakeBot()
+asyncio.run(main.weather_tick(fake_app(botn), CHAT, 1))
+check("report pubblicato con valori nulli", len(botn.sent) == 1)
+check("tutti i giorni presenti", botn.sent[0]["text"].count("🌡️") == 4)
+check("valore mancante segnato N/D", "N/D" in botn.sent[0]["text"])
+check("data registrata", weather_state.load_last_report_date() is not None)
+
+print("\n=== 19b. Meteo: giorni del festival oltre l'orizzonte -> avviso, non un post vuoto ===")
+PARZIALE = {"daily": {
+    "time": FAKE_DATA["daily"]["time"][:2],
+    "weathercode": [0, 3],
+    "temperature_2m_max": [28.0, 26.0],
+    "temperature_2m_min": [14.0, 15.0],
+    "precipitation_sum": [0.0, 0.2],
+    "windspeed_10m_max": [10.0, 12.0],
+}}
+notifier.fetch_weather_festival = lambda: asyncio.sleep(0, result=PARZIALE)
+weather_state.WEATHER_STATE_FILE.unlink(missing_ok=True)
+botpz = FakeBot()
+asyncio.run(main.weather_tick(fake_app(botpz), CHAT, 1))
+check("report pubblicato con i giorni disponibili", len(botpz.sent) == 1)
+check("solo i 2 giorni previsti", botpz.sent[0]["text"].count("🌡️") == 2)
+check("giornate mancanti segnalate", "oltre l'orizzonte" in botpz.sent[0]["text"])
+
+print("\n=== 19c. Meteo: caption troppo lunga -> pubblicato come testo, senza webcam ===")
+notifier.fetch_weather_festival = lambda: asyncio.sleep(0, result=FAKE_DATA)
+notifier.fetch_webcam_snapshot = lambda: asyncio.sleep(0, result=b"\xff\xd8\xff jpeg")
+weather_state.WEATHER_STATE_FILE.unlink(missing_ok=True)
+botlong = FakeBot()
+asyncio.run(notifier.send_weather_message(botlong, CHAT, 1, "x" * (notifier.MAX_CAPTION_LENGTH + 1)))
+check("nessuna foto oltre il limite di caption", botlong.photos == [])
+check("pubblicato come messaggio di testo", len(botlong.sent) == 1)
+notifier.fetch_webcam_snapshot = lambda: asyncio.sleep(0, result=None)
+
+print("\n=== 19d. Meteo: fuori finestra -> niente ===")
+weather.FESTIVAL_START = OGGI + timedelta(days=200)
+weather.FESTIVAL_END = OGGI + timedelta(days=203)
 weather_state.WEATHER_STATE_FILE.unlink(missing_ok=True)
 boto = FakeBot()
 asyncio.run(main.weather_tick(fake_app(boto), CHAT, 1))
 check("nessun messaggio fuori finestra", boto.sent == [] and boto.photos == [])
+
+print("\n=== 19e. Meteo: finestra aperta a 15 giorni, chiusa a 16 ===")
+weather.FESTIVAL_START = OGGI + timedelta(days=15)
+weather.FESTIVAL_END = OGGI + timedelta(days=18)
+check("finestra aperta a 15 giorni", weather.festival_window_open())
+weather.FESTIVAL_START = OGGI + timedelta(days=16)
+weather.FESTIVAL_END = OGGI + timedelta(days=19)
+check("finestra chiusa a 16 giorni", not weather.festival_window_open())
+weather.FESTIVAL_START = OGGI - timedelta(days=3)
+weather.FESTIVAL_END = OGGI
+check("finestra aperta l'ultimo giorno del festival", weather.festival_window_open())
+weather.FESTIVAL_START = OGGI - timedelta(days=4)
+weather.FESTIVAL_END = OGGI - timedelta(days=1)
+check("finestra chiusa a festival concluso", not weather.festival_window_open())
 
 print("\n=== 20. Markdown non valido -> re-invio senza formattazione ===")
 reset_state()

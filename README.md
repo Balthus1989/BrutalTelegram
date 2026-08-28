@@ -24,6 +24,11 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   prima del festival e durante lo stesso, con previsioni filtrate sui soli giorni del
   festival; se il bot era spento o l'invio è fallito, il report viene recuperato più tardi
   nella stessa giornata
+- Open-Meteo prevede al massimo 16 giorni: nei primi giorni della finestra le ultime
+  giornate del festival non sono ancora disponibili e il report lo segnala, invece di
+  restare muto o di pubblicare un post senza previsioni
+- Valori mancanti nella risposta dell'API vengono mostrati come `N/D` e non fanno più
+  fallire l'intero report
 - Snapshot dalla webcam live di Josefov allegata ai messaggi meteo, con fallback a solo
   testo se l'immagine non è pubblicabile
 
@@ -83,7 +88,7 @@ Variabili opzionali:
 
 > **Permessi del bot:** per eliminare i messaggi dei biglietti venduti il bot deve essere amministratore del gruppo con il permesso "Delete messages". Senza quel permesso Telegram rifiuta l'eliminazione dei messaggi piu vecchi di 48 ore e il bot si limita a riscriverli come "VENDUTO".
 
-> **Fine edizione:** al termine del festival aggiorna `FESTIVAL_START` / `FESTIVAL_END` (o i valori di default in `weather_forecast/weather.py`), altrimenti il report meteo automatico resta silente.
+> **Fine edizione:** al termine del festival aggiorna `FESTIVAL_START` / `FESTIVAL_END` (o i valori di default in `weather_forecast/weather.py`), altrimenti il report meteo automatico resta silente. All'avvio il bot logga le date in uso e se la finestra del meteo e attiva oggi: e il primo posto dove guardare se il report non arriva.
 
 ## Avvio
 
