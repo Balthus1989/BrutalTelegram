@@ -303,49 +303,83 @@ async def delete_sold_messages(
     await resolve_sold_messages(bot, records, chat_id)
 
 
+# Lunghezza massima del testo tradotto in caption: il resto dei 1024 caratteri
+# ammessi da Telegram serve al titolo e all'emoji.
+MAX_NEWS_TEXT_LENGTH = 900
+
+
+def format_news_caption(titolo: str, testo: str, plain: bool = False) -> str:
+    """
+    Caption di una news: titolo in grassetto e testo tradotto.
+
+    Titolo e testo arrivano dal sito e passano dal traduttore: contengono
+    caratteri (* _ [ < &) che Telegram interpreterebbe come formattazione e che
+    con Markdown facevano fallire l'invio ("can't find end of the entity").
+    Come per gli alert di disponibilità si usa HTML, con tutto il testo che
+    viene dal sito passato per html.escape.
+
+    Args:
+        plain: senza formattazione, ultima rete di sicurezza se Telegram
+               rifiuta anche l'HTML.
+    """
+    testo_breve = (
+        testo[:MAX_NEWS_TEXT_LENGTH] + "..." if len(testo) > MAX_NEWS_TEXT_LENGTH else testo
+    )
+    if plain:
+        return f"🤘 {titolo}\n\n{testo_breve}"
+    return f"🤘 <b>{html.escape(titolo)}</b>\n\n{html.escape(testo_breve)}"
+
+
 async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
     """Invia una news con immagine, testo tradotto e bottone link"""
-    
+
     # Scrapa e traduce
     dettagli = await fetch_article(articolo["url"])
     # translate() usa requests (sincrono): eseguito nel loop bloccherebbe lo
     # scheduler, facendo saltare i tick di ticket e meteo.
     titolo_it = await asyncio.to_thread(translate, articolo["titolo"])
     testo_it = await asyncio.to_thread(translate, dettagli["testo"])
-    
-    # Tronca il testo se troppo lungo (Telegram: max 1024 char per caption)
-    testo_breve = testo_it[:900] + "..." if len(testo_it) > 900 else testo_it
-    
-    caption = (
-        f"🤘 *{titolo_it}*\n\n"
-        f"{testo_breve}"
-    )
-    
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📰 Leggi l'articolo originale", url=articolo["url"])]
     ])
-    
+
     # Nel topic "General" dei forum non va passato message_thread_id
     kwargs = thread_kwargs(topic_id)
 
-    try:
+    async def pubblica(testo: str, parse_mode: str | None) -> None:
+        formato = {"parse_mode": parse_mode} if parse_mode else {}
         if dettagli["image_url"]:
             await bot.send_photo(
                 chat_id=chat_id,
                 photo=dettagli["image_url"],
-                caption=caption,
-                parse_mode="Markdown",
+                caption=testo,
                 reply_markup=keyboard,
+                **formato,
                 **kwargs,
             )
         else:
             await bot.send_message(
                 chat_id=chat_id,
-                text=caption,
-                parse_mode="Markdown",
+                text=testo,
                 reply_markup=keyboard,
+                **formato,
                 **kwargs,
             )
+
+    try:
+        await pubblica(format_news_caption(titolo_it, testo_it), ParseMode.HTML)
+    except BadRequest as e:
+        # Senza questo fallback la news non veniva pubblicata e, non entrando
+        # tra quelle viste, veniva ritentata a ogni ciclo di polling.
+        if "parse" not in str(e).lower():
+            logger.exception("Errore invio news")
+            raise
+        logger.warning(
+            f"Formattazione non valida per la news {articolo.get('url')} ({e}) "
+            f"— invio senza formattazione."
+        )
+        await pubblica(format_news_caption(titolo_it, testo_it, plain=True), None)
     except Exception:
         logger.exception("Errore invio news")
         raise

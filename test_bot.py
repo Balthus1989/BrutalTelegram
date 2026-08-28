@@ -552,6 +552,117 @@ msg_start = FakeMessage()
 asyncio.run(main.cmd_start(SimpleNamespace(message=msg_start), None))
 check("/start elenca tutti i comandi", all(f"/{c}" in msg_start.replies[0]["text"] for c in nel_menu))
 
+# ------------------------------------------------------------------- news
+from news import news_state
+
+ARTICOLO = {
+    "id": "https://brutalassault.cz/en/a/791/lost-and-found",
+    "titolo": "Lost & found",
+    "url": "https://brutalassault.cz/en/a/791/lost-and-found",
+}
+# Testo come arriva dal sito tradotto: asterischi, underscore e parentesi quadre
+# spaiati sono esattamente ciò che faceva fallire il parsing Markdown.
+DETTAGLI = {
+    "image_url": "https://content.brutalassault.cz/images/articles/791.jpeg",
+    "testo": "Hai perso qualcosa *al festival_? Scrivi a [lost&found <ora>.",
+}
+
+
+def reset_news():
+    news_state.NEWS_STATE_FILE.unlink(missing_ok=True)
+    news_state.NEWS_FAILURES_FILE.unlink(missing_ok=True)
+
+
+def run_news(bot, articoli=(ARTICOLO,)):
+    """Esegue check_news con fetch_news e lo scraper dell'articolo simulati."""
+    async def fake_fetch():
+        return list(articoli)
+    main.fetch_news = fake_fetch
+    notifier.fetch_article = lambda url: asyncio.sleep(0, result=DETTAGLI)
+    notifier.translate = lambda testo: testo
+    asyncio.run(main.check_news(fake_app(bot), CHAT, 789))
+
+
+print("\n=== 34. News: testo con caratteri speciali -> HTML con escape ===")
+reset_news()
+bothtml = FakeBot()
+run_news(bothtml)
+caption = bothtml.photos[0]["caption"]
+check("news pubblicata come foto", len(bothtml.photos) == 1)
+check("inviata in HTML", bothtml.photos[0].get("parse_mode") == "HTML")
+check("message_thread_id passato", bothtml.photos[0].get("message_thread_id") == 789)
+check("titolo in grassetto ed escapato", "<b>Lost &amp; found</b>" in caption)
+check("testo escapato", "[lost&amp;found &lt;ora&gt;." in caption)
+check("news tracciata", ARTICOLO["id"] in news_state.load_seen())
+
+print("\n=== 35. News: formattazione rifiutata -> re-invio senza formattazione ===")
+class NewsFailBot(FakeBot):
+    """Telegram rifiuta qualunque formattazione, come per l'articolo 791."""
+    ERRORE = BadRequest(
+        "Can't parse entities: can't find end of the entity starting at byte offset 277"
+    )
+
+    async def send_photo(self, chat_id, photo, **kw):
+        if kw.get("parse_mode"):
+            raise self.ERRORE
+        return await super().send_photo(chat_id, photo, **kw)
+
+    async def send_message(self, chat_id, text, **kw):
+        if kw.get("parse_mode"):
+            raise self.ERRORE
+        return await super().send_message(chat_id, text, **kw)
+
+reset_news()
+botnews = NewsFailBot()
+run_news(botnews)
+check("news pubblicata in chiaro", len(botnews.photos) == 1 and "parse_mode" not in botnews.photos[0])
+check("testo integrale nella caption", "[lost&found <ora>." in botnews.photos[0]["caption"])
+check("news tracciata (nessun loop di re-invio)", ARTICOLO["id"] in news_state.load_seen())
+botnews2 = NewsFailBot()
+run_news(botnews2)
+check("nessun duplicato al ciclo dopo", botnews2.photos == [] and botnews2.sent == [])
+
+print("\n=== 35b. News senza immagine -> stesso fallback sul messaggio di testo ===")
+reset_news()
+DETTAGLI_NO_IMG = {"image_url": None, "testo": DETTAGLI["testo"]}
+bottxt = NewsFailBot()
+async def _fake_fetch_news():
+    return [ARTICOLO]
+main.fetch_news = _fake_fetch_news
+notifier.fetch_article = lambda url: asyncio.sleep(0, result=DETTAGLI_NO_IMG)
+notifier.translate = lambda testo: testo
+asyncio.run(main.check_news(fake_app(bottxt), CHAT, 789))
+check("pubblicata come testo senza formattazione",
+      len(bottxt.sent) == 1 and "parse_mode" not in bottxt.sent[0])
+check("nessuna foto inviata", bottxt.photos == [])
+
+print("\n=== 36. News impubblicabile -> segnata come vista dopo N tentativi ===")
+class NewsDownBot(FakeBot):
+    """Nessun invio va a buon fine: errore non recuperabile dal fallback."""
+    async def send_photo(self, chat_id, photo, **kw):
+        raise NetworkError("Bad Gateway")
+
+    async def send_message(self, chat_id, text, **kw):
+        raise NetworkError("Bad Gateway")
+
+reset_news()
+botko = NewsDownBot()
+for _ in range(main.MAX_NEWS_FAILURES - 1):
+    run_news(botko)
+check("news non pubblicata resta da ritentare", ARTICOLO["id"] not in news_state.load_seen())
+check("tentativi contati", news_state.load_failures().get(ARTICOLO["id"]) == main.MAX_NEWS_FAILURES - 1)
+run_news(botko)
+check("news abbandonata dopo il limite", ARTICOLO["id"] in news_state.load_seen())
+check("contatore ripulito", news_state.load_failures() == {})
+
+print("\n=== 36b. Invio riuscito dopo un errore -> contatore azzerato ===")
+reset_news()
+run_news(NewsDownBot())
+check("primo tentativo fallito registrato", news_state.load_failures().get(ARTICOLO["id"]) == 1)
+run_news(FakeBot())
+check("news pubblicata al tentativo successivo", ARTICOLO["id"] in news_state.load_seen())
+check("contatore azzerato dopo la pubblicazione", news_state.load_failures() == {})
+
 print("\n=== 21. Scrittura atomica: nessun file temporaneo residuo ===")
 leftovers = list(ticket_state.STATE_FILE.parent.glob(".seen_tickets.*.tmp"))
 leftovers += list(availability_state.AVAILABILITY_STATE_FILE.parent.glob(".ticket_availability.*.tmp"))

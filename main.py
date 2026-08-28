@@ -32,7 +32,7 @@ from tickets.availability_state import (
 )
 
 from news.news_scraper import fetch_news
-from news.news_state import load_seen, save_seen
+from news.news_state import load_failures, load_seen, save_failures, save_seen
 
 from weather_forecast.weather import (
     FESTIVAL_END,
@@ -445,6 +445,12 @@ async def cmd_weather(update, context) -> None:
 
 
 
+# Dopo questi tentativi consecutivi falliti la news viene segnata come vista:
+# una news impubblicabile (immagine rotta, articolo irraggiungibile) verrebbe
+# altrimenti ritentata a ogni ciclo di polling per sempre.
+MAX_NEWS_FAILURES = 5
+
+
 async def check_news(app: Application, chat_id: str, news_topic_id: int) -> None:
     """Controlla le news di Brutal Assault e notifica il gruppo Telegram."""
     logger.info("Controllo news Brutal Assault...")
@@ -462,14 +468,29 @@ async def check_news(app: Application, chat_id: str, news_topic_id: int) -> None
         return
 
     logger.info(f"Trovate {len(nuovi)} nuove news.")
+    failures = load_failures()
     for art in nuovi:
+        news_id = art["id"]
         try:
             await send_news(app.bot, chat_id, news_topic_id, art)
-            seen.add(art["id"])
+            seen.add(news_id)
+            failures.pop(news_id, None)
         except Exception as e:
             logger.exception(f"Errore invio news {art.get('id')}: {e}")
+            tentativi = failures.get(news_id, 0) + 1
+            if tentativi >= MAX_NEWS_FAILURES:
+                logger.error(
+                    f"News {news_id} non pubblicata dopo {tentativi} tentativi: "
+                    f"la segno come vista per non ritentarla a ogni ciclo."
+                )
+                seen.add(news_id)
+                failures.pop(news_id, None)
+            else:
+                failures[news_id] = tentativi
 
     save_seen(seen)
+    # Le news che nel frattempo sono sparite dal sito non vanno contate per sempre
+    save_failures({k: v for k, v in failures.items() if k in {a["id"] for a in nuovi}})
 
 
 
