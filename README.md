@@ -4,6 +4,8 @@ Bot Telegram che monitora il [Ticket Exchange ufficiale di Brutal Assault](https
 
 Quando un biglietto viene venduto, il messaggio corrispondente viene eliminato automaticamente dal gruppo. Le news vengono pubblicate con titolo e testo tradotti automaticamente in italiano, immagine di copertina e bottone al link originale.
 
+Monitora anche la percentuale di biglietti ancora in vendita per la prossima edizione sul sito ufficiale, avvisando il thread dei biglietti a ogni scaglione del 5% superato verso il basso, fino al sold out.
+
 Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede del festival) tramite comando e report automatici giornalieri nei giorni che precedono l'evento, con snapshot dalla webcam locale.
 
 ## Funzionalita
@@ -29,6 +31,18 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   restare muto o di pubblicare un post senza previsioni
 - Valori mancanti nella risposta dell'API vengono mostrati come `N/D` e non fanno più
   fallire l'intero report
+- Monitoraggio della disponibilita dei biglietti della prossima edizione: la barra
+  "Available" della scheda prodotto viene letta ogni 15 minuti e il gruppo riceve un
+  alert a ogni multiplo di 5% superato verso il basso (sotto il 35%, sotto il 30%, ...)
+  e uno finale al sold out
+- Al primo avvio viene pubblicato un riepilogo con la percentuale attuale, anche se non
+  e un multiplo di 5: serve anche a verificare che il bot scriva nel topic giusto
+- Se tra due controlli la disponibilita crolla di piu scaglioni, l'alert resta uno solo
+  ma cita le soglie bruciate; una risalita (nuova tranche in vendita) non genera alert
+  ma rialza la soglia, cosi le discese successive tornano a essere notificate
+- Una pagina non parsabile o una barra illeggibile non vengono mai interpretate come
+  sold out, e un biglietto sparito dallo shop viene dichiarato esaurito solo dopo
+  2 cicli consecutivi di assenza
 - Snapshot dalla webcam live di Josefov allegata ai messaggi meteo, con fallback a solo
   testo se l'immagine non è pubblicabile
 
@@ -81,12 +95,15 @@ Variabili opzionali:
 | `FESTIVAL_START` | `2026-08-05` | Primo giorno del festival (`YYYY-MM-DD`) |
 | `FESTIVAL_END` | `2026-08-08` | Ultimo giorno del festival (`YYYY-MM-DD`) |
 | `BOT_DATA_DIR` | `/data` | Directory dei file di stato (volume Fly.io) |
+| `TICKET_PRODUCT_MATCH` | `2027` | Testo che il nome di un prodotto deve contenere per essere monitorato |
 
 > **Nota sui topic id nei forum Telegram:** il topic "General" non ha un thread id valido. Se vuoi pubblicare nel General, lascia il topic id vuoto o impostalo a `1` — il bot omettera automaticamente il `message_thread_id`. Per topic reali, apri un messaggio del topic, clicca "Copia link" e il numero dopo `/c/<chat_id>/` e il thread id da usare.
 >
 > Se `TELEGRAM_WEATHER_TOPIC_ID` non e impostato, il report meteo viene pubblicato nello stesso topic delle news.
 
 > **Permessi del bot:** per eliminare i messaggi dei biglietti venduti il bot deve essere amministratore del gruppo con il permesso "Delete messages". Senza quel permesso Telegram rifiuta l'eliminazione dei messaggi piu vecchi di 48 ore e il bot si limita a riscriverli come "VENDUTO".
+
+> **Fine edizione (biglietti):** gli alert sulla disponibilita seguono `TICKET_PRODUCT_MATCH`, che filtra i prodotti dello shop per nome (default `2027`). Senza filtro finirebbero sotto osservazione anche i gift voucher, la cui percentuale e impostata a mano. Quando parte la vendita dell'edizione successiva, aggiorna quella variabile (o il default in `tickets/availability_scraper.py`): altrimenti il bot continua a seguire biglietti non piu in vendita e li dichiara sold out.
 
 > **Fine edizione:** al termine del festival aggiorna `FESTIVAL_START` / `FESTIVAL_END` (o i valori di default in `weather_forecast/weather.py`), altrimenti il report meteo automatico resta silente. All'avvio il bot logga le date in uso e se la finestra del meteo e attiva oggi: e il primo posto dove guardare se il report non arriva.
 
@@ -104,7 +121,8 @@ python test_bot.py
 
 Test funzionali offline (bot Telegram e siti simulati) su: notifica dei nuovi annunci,
 conferma della vendita, eliminazione dei messaggi con i vari fallback, resistenza agli
-errori di scraping e pubblicazione del report meteo.
+errori di scraping, pubblicazione del report meteo e alert sulla disponibilita dei
+biglietti (riepilogo iniziale, soglie del 5%, crolli multi-soglia, sold out, invii falliti).
 
 ## Struttura
 
@@ -117,7 +135,9 @@ BrutalTelegram/
 ├── translator.py                  # Traduzione testi in italiano (Google Translate)
 ├── tickets/
 │   ├── ticket_scraper.py          # Fetch e parsing della pagina xchange
-│   └── ticket_state.py            # Persistenza stato ticket (seen_tickets.json)
+│   ├── ticket_state.py            # Persistenza stato ticket (seen_tickets.json)
+│   ├── availability_scraper.py    # Percentuale di biglietti ancora in vendita + soglie
+│   └── availability_state.py      # Soglie gia notificate (ticket_availability.json)
 ├── news/
 │   ├── news_scraper.py            # Fetch e parsing delle news + articoli
 │   └── news_state.py              # Persistenza stato news (seen_news.json)

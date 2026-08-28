@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import main, notifier
 from telegram.error import BadRequest, NetworkError
-from tickets import ticket_state
+from tickets import availability_state, ticket_state
 from weather_forecast import weather, weather_state
 
 CHAT = "-100123456789"
@@ -360,8 +360,144 @@ asyncio.run(run_cycle(botmd2, [{"id": "77", "product": "Pass *VIP_2026*", "price
                                "url": "https://brutalassault.cz/en/xchange/detail/id/77"}]))
 check("nessun duplicato al ciclo dopo", botmd2.sent == [])
 
+# ------------------------------------------- disponibilità biglietti in vendita
+PASS_2027 = "first edition BRUTAL ASSAULT 2027 festival pass [e-ticket]"
+
+
+def prodotto(percent, pid="1104", name=PASS_2027, sold_out=False):
+    return {
+        "id": pid,
+        "name": name,
+        "url": f"https://brutalassault.cz/en/tickets/detail/id/{pid}",
+        "percent": percent,
+        "sold_out": sold_out,
+    }
+
+
+def reset_avail():
+    availability_state.AVAILABILITY_STATE_FILE.unlink(missing_ok=True)
+
+
+async def run_avail(bot, prodotti, topic=456):
+    """Esegue check_ticket_availability con fetch_ticket_availability simulata."""
+    async def fake_fetch():
+        return prodotti
+    main.fetch_ticket_availability = fake_fetch
+    await main.check_ticket_availability(fake_app(bot), CHAT, topic)
+
+
+print("\n=== 22. Primo avvio -> riepilogo con la percentuale attuale ===")
+reset_avail()
+bota = FakeBot()
+asyncio.run(run_avail(bota, [prodotto(35.012386457473)]))
+stato = availability_state.load_availability_state()
+check("messaggio iniziale pubblicato", len(bota.sent) == 1)
+check("percentuale attuale non multipla di 5", "35,0%" in bota.sent[0]["text"])
+check("inviato in HTML", bota.sent[0].get("parse_mode") == "HTML")
+check("thread dei biglietti", bota.sent[0].get("message_thread_id") == 456)
+check("stato inizializzato con soglia 35", stato["initialized"] and stato["products"]["1104"]["level"] == 35)
+
+print("\n=== 23. Dentro lo stesso scaglione -> nessun messaggio ===")
+botb = FakeBot()
+asyncio.run(run_avail(botb, [prodotto(35.0)]))     # ancora nella banda 35
+check("nessun alert entro lo stesso scaglione", botb.sent == [])
+asyncio.run(run_avail(botb, [prodotto(33.4)]))     # sceso sotto il 35%
+check("un alert alla discesa", len(botb.sent) == 1)
+check("annuncia la soglia superata", "sotto il 35%" in botb.sent[0]["text"])
+check("non annuncia soglie non superate", "30%" not in botb.sent[0]["text"])
+
+print("\n=== 24. Discesa di più soglie insieme -> un solo messaggio ===")
+reset_avail()
+botc = FakeBot()
+asyncio.run(run_avail(botc, [prodotto(35.0)]))     # riepilogo iniziale
+botc.sent.clear()
+asyncio.run(run_avail(botc, [prodotto(22.0)]))
+check("un solo alert", len(botc.sent) == 1)
+check("annuncia la soglia più bassa superata", "sotto il 25%" in botc.sent[0]["text"])
+check("cita le soglie bruciate", "35%" in botc.sent[0]["text"] and "30%" in botc.sent[0]["text"])
+check("scaglione registrato", availability_state.load_availability_state()["products"]["1104"]["level"] == 20)
+
+print("\n=== 25. Disponibilità risalita -> nessun alert, scaglione rialzato ===")
+botd = FakeBot()
+asyncio.run(run_avail(botd, [prodotto(41.0)]))     # nuova tranche in vendita
+check("nessun alert in risalita", botd.sent == [])
+check("scaglione rialzato a 40", availability_state.load_availability_state()["products"]["1104"]["level"] == 40)
+asyncio.run(run_avail(botd, [prodotto(38.0)]))
+check("la discesa successiva riallerta", len(botd.sent) == 1 and "sotto il 40%" in botd.sent[0]["text"])
+
+print("\n=== 26. Zero per cento -> sold out, annunciato una volta sola ===")
+reset_avail()
+bote = FakeBot()
+# Sotto il 5% lo scaglione è già 0: l'esaurimento non cambia banda e va
+# riconosciuto dalla percentuale, non dal salto di soglia.
+asyncio.run(run_avail(bote, [prodotto(4.0)]))      # riepilogo iniziale
+check("sotto il 5% non è un sold out", not availability_state.load_availability_state()["products"]["1104"]["sold_out"])
+bote.sent.clear()
+asyncio.run(run_avail(bote, [prodotto(0.0, sold_out=True)]))
+check("sold out annunciato", len(bote.sent) == 1 and "SOLD OUT" in bote.sent[0]["text"])
+check("rimanda al Ticket Exchange", "xchange" in bote.sent[0]["text"])
+asyncio.run(run_avail(bote, [prodotto(0.0, sold_out=True)]))
+check("nessun doppione di sold out", len(bote.sent) == 1)
+
+print("\n=== 27. Biglietto sparito dalla pagina -> sold out dopo conferma ===")
+reset_avail()
+botf = FakeBot()
+asyncio.run(run_avail(botf, [prodotto(3.0)]))      # riepilogo iniziale
+botf.sent.clear()
+asyncio.run(run_avail(botf, []))
+check("nessun annuncio al primo ciclo di assenza", botf.sent == [])
+check("assenza contata", availability_state.load_availability_state()["products"]["1104"]["missing_count"] == 1)
+asyncio.run(run_avail(botf, []))
+check("sold out al secondo ciclo", len(botf.sent) == 1 and "SOLD OUT" in botf.sent[0]["text"])
+check("ultima disponibilità citata", "3,0%" in botf.sent[0]["text"])
+check("prodotto non più tracciato", availability_state.load_availability_state()["products"] == {})
+
+print("\n=== 28. Pagina illeggibile -> nessun messaggio, stato intatto ===")
+reset_avail()
+botg = FakeBot()
+asyncio.run(run_avail(botg, [prodotto(30.0)]))     # riepilogo iniziale
+botg.sent.clear()
+asyncio.run(run_avail(botg, None))                 # fetch fallito
+check("nessun messaggio su fetch fallito", botg.sent == [])
+check("soglia invariata", availability_state.load_availability_state()["products"]["1104"]["level"] == 30)
+asyncio.run(run_avail(botg, [prodotto(None)]))     # barra non parsabile
+check("nessun sold out per barra illeggibile", botg.sent == [])
+check("nessuna assenza contata", availability_state.load_availability_state()["products"]["1104"]["missing_count"] == 0)
+
+print("\n=== 29. Invio fallito -> soglia non registrata, alert ritentato ===")
+reset_avail()
+class MuteBot(FakeBot):
+    async def send_message(self, *a, **kw):
+        raise BadRequest("message thread not found")
+asyncio.run(run_avail(MuteBot(), [prodotto(35.0)]))
+check("riepilogo iniziale non registrato se non parte", availability_state.load_availability_state()["initialized"] is False)
+both = FakeBot()
+asyncio.run(run_avail(both, [prodotto(35.0)]))
+check("riepilogo ripubblicato al ciclo dopo", len(both.sent) == 1)
+asyncio.run(run_avail(MuteBot(), [prodotto(29.0)]))
+check("scaglione non registrato dopo invio fallito", availability_state.load_availability_state()["products"]["1104"]["level"] == 35)
+both2 = FakeBot()
+asyncio.run(run_avail(both2, [prodotto(29.0)]))
+check("alert ritentato con successo", len(both2.sent) == 1 and "sotto il 30%" in both2.sent[0]["text"])
+
+print("\n=== 30. Nuovo biglietto 2027 dopo l'avvio -> annunciato ===")
+boti = FakeBot()
+asyncio.run(run_avail(boti, [prodotto(29.0), prodotto(90.0, pid="1200", name="BRUTAL ASSAULT 2027 VIP lounge")]))
+check("nuovo biglietto annunciato", len(boti.sent) == 1 and "Nuovo biglietto" in boti.sent[0]["text"])
+check("percentuale del nuovo biglietto", "90,0%" in boti.sent[0]["text"])
+check("entrambi tracciati", set(availability_state.load_availability_state()["products"]) == {"1104", "1200"})
+
+print("\n=== 31. Nomi con caratteri speciali -> HTML valido ===")
+botj = FakeBot()
+reset_avail()
+asyncio.run(run_avail(botj, [prodotto(50.0, name='Pass <2027> & "friends" [e-ticket]')], topic=1))
+testo = botj.sent[0]["text"]
+check("caratteri HTML neutralizzati", "&lt;2027&gt;" in testo and "&amp;" in testo)
+check("nessun message_thread_id per General", "message_thread_id" not in botj.sent[0])
+
 print("\n=== 21. Scrittura atomica: nessun file temporaneo residuo ===")
 leftovers = list(ticket_state.STATE_FILE.parent.glob(".seen_tickets.*.tmp"))
+leftovers += list(availability_state.AVAILABILITY_STATE_FILE.parent.glob(".ticket_availability.*.tmp"))
 check("nessun .tmp residuo", leftovers == [])
 
 print(f"\n===== {len(ok)} PASS, {len(fail)} FAIL =====")

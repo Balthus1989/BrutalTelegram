@@ -16,6 +16,18 @@ from telegram.ext import Application, CommandHandler
 from config import load_config
 from tickets.ticket_scraper import fetch_listings, get_face_value
 from tickets.ticket_state import STATE_FILE, load_state, save_state, make_record
+from tickets.availability_scraper import (
+    ALERT_STEP,
+    PRODUCT_MATCH,
+    fetch_ticket_availability,
+    level_of,
+    levels_crossed,
+)
+from tickets.availability_state import (
+    load_availability_state,
+    make_record as make_availability_record,
+    save_availability_state,
+)
 
 from news.news_scraper import fetch_news
 from news.news_state import load_seen, save_seen
@@ -32,7 +44,19 @@ from weather_forecast.weather import (
 from weather_forecast.weather_state import load_last_report_date, save_last_report_date
 from weather_forecast.webcam import fetch_webcam_snapshot
 
-from notifier import notify_new_listings, resolve_sold_messages, send_news, send_weather, format_price_delta
+from notifier import (
+    format_availability_alert,
+    format_availability_intro,
+    format_availability_new,
+    format_availability_sold_out,
+    format_percent,
+    format_price_delta,
+    notify_new_listings,
+    resolve_sold_messages,
+    send_availability_message,
+    send_news,
+    send_weather,
+)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -49,6 +73,11 @@ MISSING_POLLS_BEFORE_SOLD = 2
 
 # Dopo questi tentativi falliti si smette di ritentare la rimozione del messaggio
 MAX_DELETE_ATTEMPTS = 10
+
+# Frequenza del controllo sulla disponibilità dei biglietti in vendita.
+# Più rado del Ticket Exchange: la percentuale si muove lentamente e ogni ciclo
+# costa una richiesta all'elenco più una per ogni scheda prodotto.
+AVAILABILITY_CHECK_MINUTES = 15
 
 # Report meteo automatico: ora locale del festival e frequenza dei tentativi
 WEATHER_REPORT_HOUR = 8
@@ -128,6 +157,145 @@ async def check_exchange(app: Application, chat_id: str, topic_id: int = None) -
         )
 
 
+async def check_ticket_availability(app: Application, chat_id: str, topic_id: int = None) -> None:
+    """
+    Controlla quanti biglietti restano in vendita sul sito ufficiale e avvisa il
+    topic dei biglietti a ogni scaglione del 5% superato verso il basso, fino al
+    sold out.
+
+    Al primo avvio (nessuno stato salvato) pubblica un riepilogo con la
+    percentuale attuale, anche se non è un multiplo di 5.
+    """
+    logger.info("Controllo disponibilità biglietti...")
+
+    products = await fetch_ticket_availability()
+    if products is None:
+        logger.warning(
+            "Impossibile leggere la disponibilità dei biglietti. Riprovo al prossimo ciclo."
+        )
+        return
+
+    state = load_availability_state()
+    known = state["products"]
+
+    # Una barra illeggibile non è un esaurimento: quei prodotti vengono saltati
+    # per questo ciclo, ma restano "visti" e non maturano un sold out.
+    seen_ids = {p["id"] for p in products}
+    readable = [p for p in products if p["percent"] is not None]
+    for p in products:
+        if p["percent"] is None:
+            logger.warning(
+                f"Disponibilità non leggibile per '{p['name']}': prodotto saltato in questo ciclo."
+            )
+
+    if not state["initialized"]:
+        # Messaggio iniziale: serve anche a verificare che il bot scriva nel
+        # topic giusto. Lo stato viene salvato solo se il messaggio è partito,
+        # altrimenti al prossimo ciclo si ritenta.
+        if not await send_availability_message(
+            app.bot, chat_id, topic_id, format_availability_intro(readable)
+        ):
+            logger.warning("Riepilogo iniziale non pubblicato: ritento al prossimo ciclo.")
+            return
+        for p in readable:
+            known[p["id"]] = make_availability_record(p, level_of(p["percent"]))
+        state["initialized"] = True
+        if not save_availability_state(state):
+            logger.error("Stato disponibilità non salvato: il riepilogo verrà ripubblicato.")
+        return
+
+    for p in readable:
+        percent = p["percent"]
+        level = level_of(percent)
+        record = known.get(p["id"])
+
+        if record is None:
+            # Biglietto comparso dopo l'avvio del monitoraggio (nuova tipologia
+            # messa in vendita): lo si annuncia e si parte a tracciarlo da qui.
+            if await send_availability_message(
+                app.bot, chat_id, topic_id, format_availability_new(p)
+            ):
+                known[p["id"]] = make_availability_record(p, level)
+            continue
+
+        record["missing_count"] = 0
+        record["name"] = p["name"] or record.get("name")
+        record["url"] = p["url"] or record.get("url")
+        previous_level = record.get("level", 100)
+        previous_percent = record.get("percent")
+
+        # Il sold out va verificato a parte: sotto il 5% la banda è già 0, quindi
+        # l'esaurimento non produrrebbe nessun cambio di scaglione da notificare.
+        sold_out = p["sold_out"] or percent <= 0
+
+        if sold_out and not record.get("sold_out"):
+            logger.info(f"'{record['name']}': SOLD OUT ({previous_percent}% → {percent}%).")
+            testo = format_availability_sold_out({**record, "percent": percent}, still_listed=True)
+            if await send_availability_message(app.bot, chat_id, topic_id, testo):
+                record["level"] = level
+                record["percent"] = percent
+                record["sold_out"] = True
+            else:
+                logger.warning(f"Sold out di '{record['name']}' non inviato: ritento.")
+            continue
+
+        if level >= previous_level:
+            # Disponibilità stabile o risalita (nuova tranche in vendita): niente
+            # alert, ma lo scaglione va rialzato o le discese successive resterebbero mute.
+            if level > previous_level:
+                logger.info(
+                    f"Disponibilità di '{record['name']}' risalita a {percent}% "
+                    f"(scaglione {previous_level}% → {level}%)."
+                )
+                record["level"] = level
+                record["sold_out"] = False
+            record["percent"] = percent
+            continue
+
+        crossed = levels_crossed(previous_level, level)
+        soglia = crossed[-1]  # la più bassa effettivamente superata
+        logger.info(
+            f"'{record['name']}': {previous_percent}% → {percent}% — "
+            f"sotto il {soglia}% (soglie superate: {crossed})."
+        )
+
+        testo = format_availability_alert(p, soglia, previous_percent, crossed)
+        if await send_availability_message(app.bot, chat_id, topic_id, testo):
+            record["level"] = level
+            record["percent"] = percent
+        else:
+            # Scaglione non registrato: l'alert viene ritentato al prossimo ciclo.
+            logger.warning(f"Alert {soglia}% per '{record['name']}' non inviato: ritento.")
+
+    # Biglietti spariti dalla pagina: come per il Ticket Exchange servono più
+    # cicli consecutivi di assenza prima di dichiararli esauriti.
+    for product_id in list(known.keys() - seen_ids):
+        record = known[product_id]
+        record["missing_count"] = record.get("missing_count", 0) + 1
+        if record["missing_count"] < MISSING_POLLS_BEFORE_SOLD:
+            logger.info(
+                f"Biglietto '{record.get('name')}' non più in pagina "
+                f"({record['missing_count']}/{MISSING_POLLS_BEFORE_SOLD}): attendo conferma."
+            )
+            continue
+
+        if record.get("sold_out"):
+            # Sold out già annunciato quando la barra era a 0: niente doppione.
+            known.pop(product_id, None)
+            continue
+
+        if await send_availability_message(
+            app.bot, chat_id, topic_id, format_availability_sold_out(record, still_listed=False)
+        ):
+            known.pop(product_id, None)
+
+    if not save_availability_state(state):
+        logger.error(
+            "Stato disponibilità non salvato: al prossimo ciclo le soglie già "
+            "annunciate potrebbero essere ripubblicate."
+        )
+
+
 async def cmd_start(update, context) -> None:
     await update.message.reply_text(
         "🤘 *Brutal Assault Italia Bot* attivo!\n\n"
@@ -153,6 +321,11 @@ async def cmd_status(update, context) -> None:
     ]
     if pendenti:
         righe.append(f"⚠️ Messaggi venduti in attesa di rimozione: {pendenti}")
+
+    for record in load_availability_state()["products"].values():
+        stato = "SOLD OUT" if record.get("sold_out") else format_percent(record.get("percent"))
+        righe.append(f"📊 {record.get('name')}: {stato}")
+
     await update.message.reply_text("\n".join(righe))
 
 
@@ -349,6 +522,23 @@ async def main() -> None:
         replace_existing=True,
     )
 
+    # Disponibilità dei biglietti sul sito ufficiale: stesso topic degli annunci
+    # del Ticket Exchange.
+    scheduler.add_job(
+        run_job,
+        trigger="interval",
+        minutes=AVAILABILITY_CHECK_MINUTES,
+        args=[
+            "ticket_availability",
+            check_ticket_availability,
+            app,
+            config["chat_id"],
+            config["topic_id"],
+        ],
+        id="ticket_availability",
+        replace_existing=True,
+    )
+
     # Il report meteo è schedulato a intervalli e non come cron alle 08:00:
     # weather_tick pubblica una sola volta al giorno e recupera l'invio se
     # l'orario previsto è stato mancato (riavvio del bot, deploy, errore di rete).
@@ -369,6 +559,11 @@ async def main() -> None:
         f"{REPORT_WINDOW_DAYS} giorni precedenti e durante — "
         f"finestra attiva oggi: {'sì' if festival_window_open() else 'no'}."
     )
+    logger.info(
+        f"Disponibilità biglietti: prodotti con '{PRODUCT_MATCH}' nel nome, "
+        f"controllo ogni {AVAILABILITY_CHECK_MINUTES} minuti, alert a ogni "
+        f"{ALERT_STEP}% nel topic ticket ({config['topic_id'] or 'General'})."
+    )
     logger.info("Avvio bot Brutal Assault Italia...")
     scheduler.start()
 
@@ -376,6 +571,13 @@ async def main() -> None:
     async with app:
         await run_job("exchange_poll", check_exchange, app, config["chat_id"], config["topic_id"])
         await run_job("news_check", check_news, app, config["chat_id"], config["news_topic_id"])
+        await run_job(
+            "ticket_availability",
+            check_ticket_availability,
+            app,
+            config["chat_id"],
+            config["topic_id"],
+        )
         await run_job("daily_weather", weather_tick, app, config["chat_id"], config["weather_topic_id"])
         await app.start()
         await app.updater.start_polling()

@@ -3,6 +3,7 @@ Modulo per l'invio delle notifiche Telegram.
 """
 
 import asyncio
+import html
 import logging
 import io
 from telegram import Bot
@@ -12,6 +13,7 @@ from telegram.constants import ParseMode
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from news.news_scraper import fetch_article
+from tickets.availability_scraper import ALERT_STEP
 from tickets.ticket_scraper import get_face_value
 from weather_forecast.weather import (
     FESTIVAL_END,
@@ -414,3 +416,142 @@ async def send_weather(app: Application, chat_id: str, topic_id: int = None) -> 
         return False
 
     return await send_weather_message(app.bot, chat_id, topic_id, testo)
+
+
+# ---------------------------------------------------------------------------
+# Disponibilità dei biglietti in vendita sul sito ufficiale
+# ---------------------------------------------------------------------------
+
+XCHANGE_PAGE = "https://brutalassault.cz/en/xchange"
+
+
+def format_percent(percent: float | None) -> str:
+    """Percentuale in formato italiano ('35,0%'), 'n/d' se non disponibile."""
+    if percent is None:
+        return "n/d"
+    return f"{percent:.1f}".replace(".", ",") + "%"
+
+
+def _product_block(name: str | None, url: str | None, percent: float | None) -> str:
+    """
+    Nome, disponibilità e link di un biglietto.
+
+    I nomi arrivano dal sito e contengono parentesi quadre ("[e-ticket]") che in
+    Markdown verrebbero interpretate come link: questi messaggi usano HTML, con
+    il nome sempre passato per html.escape.
+    """
+    righe = [f"🎟️ <b>{html.escape(name or 'Biglietto')}</b>"]
+    righe.append(f"📊 Disponibili: <b>{format_percent(percent)}</b>")
+    if url:
+        righe.append(f"👉 <a href=\"{html.escape(url, quote=True)}\">Vai al biglietto</a>")
+    return "\n".join(righe)
+
+
+def format_availability_intro(products: list[dict]) -> str:
+    """Riepilogo pubblicato la prima volta che il monitoraggio parte."""
+    if not products:
+        return (
+            "🔎 <b>Monitoraggio biglietti attivo</b>\n\n"
+            "Al momento sul sito ufficiale non risulta in vendita nessun biglietto "
+            "per la nuova edizione: vi avviso appena compare.\n\n"
+            f"🔔 Poi vi aggiorno a ogni scaglione del {ALERT_STEP}% di disponibilità, "
+            "fino al sold out."
+        )
+
+    blocchi = [_product_block(p.get("name"), p.get("url"), p.get("percent")) for p in products]
+    return (
+        "🔎 <b>Monitoraggio biglietti attivo</b>\n\n"
+        "Disponibilità attuale sul sito ufficiale:\n\n"
+        + "\n\n".join(blocchi)
+        + f"\n\n🔔 Vi avviso a ogni scaglione del {ALERT_STEP}% "
+        "(es. 30%, 25%, 20%...) fino al sold out."
+    )
+
+
+def format_availability_new(product: dict) -> str:
+    """Un biglietto dell'edizione monitorata è appena comparso in vendita."""
+    return (
+        "🆕 <b>Nuovo biglietto in vendita sul sito ufficiale!</b>\n\n"
+        + _product_block(product.get("name"), product.get("url"), product.get("percent"))
+        + "\n\n🏰 <i>Brutal Assault — Josefov</i>"
+    )
+
+
+def format_availability_alert(
+    product: dict,
+    soglia: int,
+    previous_percent: float | None,
+    crossed: list[int],
+) -> str:
+    """
+    Alert per una soglia di disponibilità appena superata verso il basso.
+
+    Args:
+        soglia: la soglia più bassa effettivamente superata (l'ultima di `crossed`).
+    """
+    righe = [f"⚠️ <b>Biglietti sotto il {soglia}%!</b>", ""]
+    righe.append(_product_block(product.get("name"), product.get("url"), product.get("percent")))
+
+    if previous_percent is not None:
+        righe.append(f"📉 All'ultimo controllo erano al {format_percent(previous_percent)}")
+
+    # Un crollo tra due controlli può bruciare più scaglioni insieme: l'alert
+    # resta uno solo, ma le soglie saltate vengono comunque dette.
+    if len(crossed) > 1:
+        soglie = ", ".join(f"{s}%" for s in crossed)
+        righe.append(f"⏬ Soglie superate in un colpo solo: {soglie}")
+
+    righe.append("")
+    righe.append("🏰 <i>Brutal Assault — Josefov</i>")
+    return "\n".join(righe)
+
+
+def format_availability_sold_out(record: dict, still_listed: bool) -> str:
+    """
+    Messaggio di sold out.
+
+    Args:
+        still_listed: il biglietto è ancora sulla pagina (disponibilità a 0),
+            contro il caso in cui sia proprio sparito dallo shop.
+    """
+    name = html.escape(record.get("name") or "Biglietto")
+    motivo = (
+        "I biglietti sono esauriti sul sito ufficiale."
+        if still_listed
+        else "Il biglietto non è più in vendita sul sito ufficiale "
+        f"(ultima disponibilità rilevata: {format_percent(record.get('percent'))})."
+    )
+    return (
+        f"🔴 <b>SOLD OUT — {name}</b>\n\n"
+        f"{motivo}\n\n"
+        f"🎟️ Resta il <a href=\"{XCHANGE_PAGE}\">Ticket Exchange</a>: "
+        "gli annunci di rivendita vengono pubblicati qui in automatico.\n\n"
+        "🏰 <i>Brutal Assault — Josefov</i>"
+    )
+
+
+async def send_availability_message(
+    bot: Bot,
+    chat_id: str,
+    topic_id: int | None,
+    testo: str,
+) -> bool:
+    """
+    Pubblica un messaggio sulla disponibilità nel topic dei biglietti.
+
+    Returns:
+        True se il messaggio è stato pubblicato: solo in quel caso il chiamante
+        deve registrare la soglia come già notificata.
+    """
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=testo,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            **thread_kwargs(topic_id),
+        )
+        return True
+    except TelegramError as e:
+        logger.error(f"Impossibile pubblicare l'alert disponibilità nel gruppo {chat_id}: {e}")
+        return False
