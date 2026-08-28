@@ -4,6 +4,7 @@ Modulo per l'invio delle notifiche Telegram.
 
 import asyncio
 import html
+import math
 import logging
 import io
 from telegram import Bot
@@ -13,7 +14,7 @@ from telegram.constants import ParseMode
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from news.news_scraper import fetch_article
-from tickets.availability_scraper import ALERT_STEP
+from tickets.availability_scraper import ALERT_STEP, level_of
 from tickets.ticket_scraper import get_face_value
 from weather_forecast.weather import (
     FESTIVAL_END,
@@ -426,10 +427,17 @@ XCHANGE_PAGE = "https://brutalassault.cz/en/xchange"
 
 
 def format_percent(percent: float | None) -> str:
-    """Percentuale in formato italiano ('35,0%'), 'n/d' se non disponibile."""
+    """
+    Percentuale in formato italiano ('34,9%'), 'n/d' se non disponibile.
+
+    Arrotondata per difetto, non al più vicino: con l'arrotondamento normale il
+    34,957% del sito diventava "35,0%" mentre lo scaglione era già sceso a 30, e
+    l'alert "sotto il 35%" finiva accanto a un "Disponibili: 35,0%". Per difetto
+    il numero mostrato non promette mai più biglietti di quanti ce ne siano.
+    """
     if percent is None:
         return "n/d"
-    return f"{percent:.1f}".replace(".", ",") + "%"
+    return f"{math.floor(percent * 10) / 10:.1f}".replace(".", ",") + "%"
 
 
 def _product_block(name: str | None, url: str | None, percent: float | None) -> str:
@@ -466,6 +474,38 @@ def format_availability_intro(products: list[dict]) -> str:
         + f"\n\n🔔 Vi avviso a ogni scaglione del {ALERT_STEP}% "
         "(es. 30%, 25%, 20%...) fino al sold out."
     )
+
+
+def format_availability_status(products: list[dict]) -> str:
+    """
+    Risposta al comando /availability: la disponibilità del momento.
+
+    Diverso da format_availability_intro(), che annuncia l'avvio del
+    monitoraggio e ha senso una volta sola.
+    """
+    if not products:
+        return (
+            "🎟️ <b>Biglietti sul sito ufficiale</b>\n\n"
+            "Al momento non risulta in vendita nessun biglietto per la prossima edizione."
+        )
+
+    blocchi = []
+    for p in products:
+        percent = p.get("percent")
+
+        if p.get("sold_out") or (percent is not None and percent <= 0):
+            blocchi.append(f"🔴 <b>{html.escape(p.get('name') or 'Biglietto')}</b>\nSOLD OUT")
+            continue
+
+        blocco = _product_block(p.get("name"), p.get("url"), percent)
+        if percent is not None:
+            # Il prossimo alert scatta uscendo dallo scaglione attuale; sotto il
+            # 5% non resta nessuna soglia intermedia, solo l'esaurimento.
+            soglia = level_of(percent)
+            blocco += f"\n🔔 Prossimo avviso: {f'sotto il {soglia}%' if soglia else 'il sold out'}"
+        blocchi.append(blocco)
+
+    return "🎟️ <b>Biglietti in vendita sul sito ufficiale</b>\n\n" + "\n\n".join(blocchi)
 
 
 def format_availability_new(product: dict) -> str:

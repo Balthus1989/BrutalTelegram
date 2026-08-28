@@ -37,6 +37,10 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   e uno finale al sold out
 - Al primo avvio viene pubblicato un riepilogo con la percentuale attuale, anche se non
   e un multiplo di 5: serve anche a verificare che il bot scriva nel topic giusto
+- Comando `/availability` per interrogare la disponibilita in qualsiasi momento, con
+  indicazione della prossima soglia che fara scattare un alert; le percentuali sono
+  sempre arrotondate per difetto, cosi il numero mostrato non promette mai piu
+  biglietti di quanti ne restino
 - Se tra due controlli la disponibilita crolla di piu scaglioni, l'alert resta uno solo
   ma cita le soglie bruciate; una risalita (nuova tranche in vendita) non genera alert
   ma rialza la soglia, cosi le discese successive tornano a essere notificate
@@ -53,6 +57,7 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
 | `/start` | Messaggio di benvenuto |
 | `/status` | Stato del bot e annunci tracciati |
 | `/listings` | Annunci attualmente disponibili |
+| `/availability` | Percentuale di biglietti ancora in vendita sul sito ufficiale |
 | `/news` | Ultime notizie di Brutal Assault |
 | `/weather` | Previsioni meteo 7 giorni per Jaroměř con countdown al festival |
 

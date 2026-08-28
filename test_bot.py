@@ -495,6 +495,49 @@ testo = botj.sent[0]["text"]
 check("caratteri HTML neutralizzati", "&lt;2027&gt;" in testo and "&amp;" in testo)
 check("nessun message_thread_id per General", "message_thread_id" not in botj.sent[0])
 
+print("\n=== 32. Comando /availability -> disponibilità su richiesta ===")
+
+
+class FakeMessage:
+    """Messaggio finto: raccoglie le risposte del comando."""
+    def __init__(self):
+        self.replies = []
+
+    async def reply_text(self, text, **kw):
+        self.replies.append({"text": text, **kw})
+        return SimpleNamespace(message_id=1)
+
+
+def run_cmd(prodotti):
+    async def fake_fetch():
+        return prodotti
+    main.fetch_ticket_availability = fake_fetch
+    msg = FakeMessage()
+    asyncio.run(main.cmd_availability(SimpleNamespace(message=msg), None))
+    return msg.replies
+
+
+risposte = run_cmd([prodotto(35.012386457473)])
+check("risposta inviata dopo l'attesa", len(risposte) == 2)
+check("percentuale attuale", "35,0%" in risposte[1]["text"])
+check("annuncia la prossima soglia", "Prossimo avviso: sotto il 35%" in risposte[1]["text"])
+check("inviato in HTML", risposte[1].get("parse_mode") == "HTML")
+
+risposte = run_cmd([prodotto(3.0)])
+check("sotto il 5% il prossimo avviso è il sold out", "Prossimo avviso: il sold out" in risposte[1]["text"])
+
+risposte = run_cmd([prodotto(0.0, sold_out=True)])
+check("biglietto esaurito segnalato", "SOLD OUT" in risposte[1]["text"])
+
+risposte = run_cmd([])
+check("nessun biglietto in vendita", "non risulta in vendita" in risposte[1]["text"])
+
+risposte = run_cmd(None)
+check("errore di lettura segnalato", "❌" in risposte[1]["text"])
+
+risposte = run_cmd([prodotto(None)])
+check("barra illeggibile segnalata", "illeggibile" in risposte[1]["text"])
+
 print("\n=== 21. Scrittura atomica: nessun file temporaneo residuo ===")
 leftovers = list(ticket_state.STATE_FILE.parent.glob(".seen_tickets.*.tmp"))
 leftovers += list(availability_state.AVAILABILITY_STATE_FILE.parent.glob(".ticket_availability.*.tmp"))

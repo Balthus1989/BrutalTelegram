@@ -48,6 +48,7 @@ from notifier import (
     format_availability_alert,
     format_availability_intro,
     format_availability_new,
+    format_availability_status,
     format_availability_sold_out,
     format_percent,
     format_price_delta,
@@ -364,6 +365,32 @@ async def cmd_listings(update, context) -> None:
     )
 
 
+async def cmd_availability(update, context) -> None:
+    """Disponibilità attuale dei biglietti sul sito ufficiale, letta al momento."""
+    await update.message.reply_text("🔍 Controllo la disponibilità dei biglietti...")
+
+    products = await fetch_ticket_availability()
+    if products is None:
+        await update.message.reply_text(
+            "❌ Impossibile leggere la disponibilità dal sito ufficiale. Riprova più tardi."
+        )
+        return
+
+    # Un prodotto esaurito può non avere più la barra: va mostrato lo stesso.
+    leggibili = [p for p in products if p["percent"] is not None or p["sold_out"]]
+    if products and not leggibili:
+        await update.message.reply_text(
+            "❌ Pagina raggiungibile ma barra di disponibilità illeggibile. Riprova più tardi."
+        )
+        return
+
+    await update.message.reply_text(
+        format_availability_status(leggibili),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
 async def cmd_news(update, context) -> None:
     """Mostra le ultime notizie di Brutal Assault."""
     await update.message.reply_text("📰 Recupero notizie in corso...")
@@ -489,6 +516,7 @@ async def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("listings", cmd_listings))
+    app.add_handler(CommandHandler("availability", cmd_availability))
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("weather", cmd_weather))
 
