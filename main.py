@@ -11,6 +11,8 @@ import logging
 from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram import BotCommand
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler
 
 from config import load_config
@@ -297,16 +299,26 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
         )
 
 
+# Elenco unico dei comandi: alimenta sia il menù "/" di Telegram (via
+# set_my_commands all'avvio) sia il testo di /start. Il menù non si aggiorna da
+# solo: senza set_my_commands resta quello configurato a mano in @BotFather e i
+# comandi aggiunti al codice non compaiono mai nell'autocompletamento.
+BOT_COMMANDS = [
+    BotCommand("start", "Mostra il messaggio di benvenuto"),
+    BotCommand("status", "Stato del bot e annunci tracciati"),
+    BotCommand("listings", "Annunci attuali sul Ticket Exchange"),
+    BotCommand("availability", "Biglietti ancora in vendita sul sito ufficiale"),
+    BotCommand("news", "Ultime notizie di Brutal Assault"),
+    BotCommand("weather", "Previsioni meteo per i giorni del festival"),
+]
+
+
 async def cmd_start(update, context) -> None:
+    elenco = "\n".join(f"/{c.command} - {c.description}" for c in BOT_COMMANDS)
     await update.message.reply_text(
         "🤘 *Brutal Assault Italia Bot* attivo!\n\n"
         "Monitoro il Ticket Exchange ufficiale e ti avviso appena esce un nuovo annuncio.\n\n"
-        "Comandi disponibili:\n"
-        "/start - Mostra questo messaggio\n"
-        "/status - Stato del bot\n"
-        "/listings - Mostra gli annunci attuali\n"
-        "/news - Mostra le ultime notizie\n"
-        "/weather - Previsioni meteo per i giorni del festival",
+        f"Comandi disponibili:\n{elenco}",
         parse_mode="Markdown",
     )
 
@@ -597,6 +609,18 @@ async def main() -> None:
 
     # Esegui subito un primo controllo all'avvio
     async with app:
+        # Il menù "/" della chat vive lato Telegram, non nel codice: va riscritto
+        # a ogni avvio, altrimenti i comandi nuovi restano invisibili anche se
+        # l'handler è attivo e il comando funziona digitandolo a mano.
+        try:
+            await app.bot.set_my_commands(BOT_COMMANDS)
+            logger.info(
+                "Menù comandi aggiornato: "
+                + ", ".join(f"/{c.command}" for c in BOT_COMMANDS)
+            )
+        except TelegramError as e:
+            logger.warning(f"Impossibile aggiornare il menù comandi: {e}")
+
         await run_job("exchange_poll", check_exchange, app, config["chat_id"], config["topic_id"])
         await run_job("news_check", check_news, app, config["chat_id"], config["news_topic_id"])
         await run_job(

@@ -8,7 +8,7 @@ Uso:
 Non contatta né Telegram né i siti reali: usa un bot finto e dati simulati.
 Lo stato viene scritto in una directory temporanea, mai su /data.
 """
-import asyncio, json, os, sys, logging, tempfile
+import asyncio, json, os, re, sys, logging, tempfile
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -537,6 +537,20 @@ check("errore di lettura segnalato", "❌" in risposte[1]["text"])
 
 risposte = run_cmd([prodotto(None)])
 check("barra illeggibile segnalata", "illeggibile" in risposte[1]["text"])
+
+print("\n=== 33. Menù comandi allineato agli handler ===")
+# Il menù "/" di Telegram non si aggiorna da solo: se un comando ha l'handler ma
+# non e in BOT_COMMANDS, resta invisibile nell'autocompletamento.
+import inspect
+registrati = set(re.findall(r'CommandHandler\("(\w+)"', inspect.getsource(main.main)))
+nel_menu = {c.command for c in main.BOT_COMMANDS}
+check("ogni handler e nel menu", registrati <= nel_menu)
+check("nessun comando fantasma nel menu", nel_menu <= registrati)
+check("availability presente", "availability" in nel_menu and "availability" in registrati)
+
+msg_start = FakeMessage()
+asyncio.run(main.cmd_start(SimpleNamespace(message=msg_start), None))
+check("/start elenca tutti i comandi", all(f"/{c}" in msg_start.replies[0]["text"] for c in nel_menu))
 
 print("\n=== 21. Scrittura atomica: nessun file temporaneo residuo ===")
 leftovers = list(ticket_state.STATE_FILE.parent.glob(".seen_tickets.*.tmp"))

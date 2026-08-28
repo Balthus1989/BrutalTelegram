@@ -61,6 +61,8 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
 | `/news` | Ultime notizie di Brutal Assault |
 | `/weather` | Previsioni meteo 7 giorni per Jaroměř con countdown al festival |
 
+> **Menu dei comandi:** l'elenco che Telegram mostra digitando `/` non si aggiorna da solo. Il bot lo riscrive a ogni avvio con `set_my_commands()` a partire da `BOT_COMMANDS` in `main.py`, che alimenta anche il testo di `/start`: un comando aggiunto solo come `CommandHandler` funziona se digitato a mano ma resta invisibile nell'autocompletamento. I client Telegram tengono l'elenco in cache, quindi puo servire riaprire la chat per vederlo aggiornato.
+
 ## Requisiti
 
 - Python 3.10+
