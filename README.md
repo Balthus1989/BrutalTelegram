@@ -113,6 +113,8 @@ Variabili opzionali:
 
 > **Permessi del bot:** per eliminare i messaggi dei biglietti venduti il bot deve essere amministratore del gruppo con il permesso "Delete messages". Senza quel permesso Telegram rifiuta l'eliminazione dei messaggi piu vecchi di 48 ore e il bot si limita a riscriverli come "VENDUTO".
 
+> **Topic chiuso (`Topic_closed`):** in un forum Telegram un topic chiuso accetta messaggi solo dagli amministratori con il permesso "Gestire i topic". Se il topic di destinazione e chiuso, Telegram rifiuta l'invio con `Topic_closed` e nel gruppo non compare nulla: riapri il topic (topic → menu → Riapri argomento) oppure concedi quel permesso al bot. Il bot ritenta da solo al ciclo successivo, senza bisogno di riavvio o deploy.
+
 > **Fine edizione (biglietti):** gli alert sulla disponibilita seguono `TICKET_PRODUCT_MATCH`, che filtra i prodotti dello shop per nome (default `2027`). Senza filtro finirebbero sotto osservazione anche i gift voucher, la cui percentuale e impostata a mano. Quando parte la vendita dell'edizione successiva, aggiorna quella variabile (o il default in `tickets/availability_scraper.py`): altrimenti il bot continua a seguire biglietti non piu in vendita e li dichiara sold out.
 
 > **Fine edizione:** al termine del festival aggiorna `FESTIVAL_START` / `FESTIVAL_END` (o i valori di default in `weather_forecast/weather.py`), altrimenti il report meteo automatico resta silente. All'avvio il bot logga le date in uso e se la finestra del meteo e attiva oggi: e il primo posto dove guardare se il report non arriva.

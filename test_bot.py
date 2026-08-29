@@ -320,6 +320,25 @@ check("nessuna foto oltre il limite di caption", botlong.photos == [])
 check("pubblicato come messaggio di testo", len(botlong.sent) == 1)
 notifier.fetch_webcam_snapshot = lambda: asyncio.sleep(0, result=None)
 
+print("\n=== 19f. Topic chiuso: l'errore dice cosa fare ===")
+class ClosedTopicBot(FakeBot):
+    async def send_message(self, *a, **kw):
+        raise BadRequest("Topic_closed")
+
+    async def send_photo(self, *a, **kw):
+        raise BadRequest("Topic_closed")
+
+weather_state.WEATHER_STATE_FILE.unlink(missing_ok=True)
+asyncio.run(main.weather_tick(fake_app(ClosedTopicBot()), CHAT, 456))
+check("report non registrato: ritentato al ciclo dopo",
+      weather_state.load_last_report_date() is None)
+check("errore su topic chiuso spiegato",
+      "«Gestire i topic»" in notifier.explain(BadRequest("Topic_closed")))
+check("errore su topic inesistente spiegato",
+      "TELEGRAM_*_TOPIC_ID" in notifier.explain(BadRequest("Message thread not found")))
+check("errore sconosciuto lasciato intatto",
+      notifier.explain(BadRequest("Boom")) == "Boom")
+
 print("\n=== 19d. Meteo: fuori finestra -> niente ===")
 weather.FESTIVAL_START = OGGI + timedelta(days=200)
 weather.FESTIVAL_END = OGGI + timedelta(days=203)

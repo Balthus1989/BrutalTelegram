@@ -31,6 +31,45 @@ logger = logging.getLogger(__name__)
 # Limite di Telegram per la caption di una foto (il testo di un messaggio arriva a 4096).
 MAX_CAPTION_LENGTH = 1024
 
+# Rifiuti di Telegram che dipendono dalla configurazione del gruppo, non dal bot:
+# da soli ("Topic_closed") non dicono cosa fare, e il messaggio continua a fallire
+# a ogni ciclo finché qualcuno non interviene nel gruppo.
+_ERROR_HINTS = (
+    (
+        "topic_closed",
+        "il topic di destinazione è chiuso: riaprilo dal gruppo (topic → menu → "
+        "Riapri argomento) oppure dai al bot il permesso di amministratore "
+        "«Gestire i topic», che consente di pubblicare anche nei topic chiusi",
+    ),
+    (
+        "message thread not found",
+        "il topic indicato non esiste in questo gruppo: controlla TELEGRAM_*_TOPIC_ID, "
+        "oppure lascialo vuoto per pubblicare nel topic General",
+    ),
+    (
+        "not enough rights",
+        "il bot non ha i permessi necessari nel gruppo: rendilo amministratore",
+    ),
+    (
+        "chat not found",
+        "TELEGRAM_CHAT_ID non corrisponde a nessun gruppo visibile al bot",
+    ),
+    (
+        "bot was kicked",
+        "il bot è stato rimosso dal gruppo: reinseriscilo e rendilo amministratore",
+    ),
+)
+
+
+def explain(e) -> str:
+    """Errore Telegram con, quando riconoscibile, l'azione che lo risolve."""
+    testo = str(e)
+    minuscolo = testo.lower()
+    for marker, hint in _ERROR_HINTS:
+        if marker in minuscolo:
+            return f"{testo} — {hint}"
+    return testo
+
 
 def thread_kwargs(topic_id) -> dict:
     """
@@ -134,7 +173,7 @@ async def notify_new_listings(
             # Un nome prodotto con caratteri Markdown (* _ [ ) farebbe fallire l'invio
             # a ogni ciclo: ripubblica senza formattazione invece di riprovare all'infinito.
             if "parse" not in str(e).lower():
-                logger.error(f"Errore Telegram per annuncio {listing['id']}: {e}")
+                logger.error(f"Errore Telegram per annuncio {listing['id']}: {explain(e)}")
                 continue
             logger.warning(
                 f"Markdown non valido per annuncio {listing['id']} ({e}) — invio senza formattazione."
@@ -148,10 +187,10 @@ async def notify_new_listings(
                 )
                 sent[listing["id"]] = result.message_id
             except TelegramError as e2:
-                logger.error(f"Errore Telegram per annuncio {listing['id']}: {e2}")
+                logger.error(f"Errore Telegram per annuncio {listing['id']}: {explain(e2)}")
 
         except TelegramError as e:
-            logger.error(f"Errore Telegram per annuncio {listing['id']}: {e}")
+            logger.error(f"Errore Telegram per annuncio {listing['id']}: {explain(e)}")
 
     return sent
 
@@ -373,7 +412,7 @@ async def send_news(bot: Bot, chat_id: str, topic_id: int, articolo: dict):
         # Senza questo fallback la news non veniva pubblicata e, non entrando
         # tra quelle viste, veniva ritentata a ogni ciclo di polling.
         if "parse" not in str(e).lower():
-            logger.exception("Errore invio news")
+            logger.exception(f"Errore invio news: {explain(e)}")
             raise
         logger.warning(
             f"Formattazione non valida per la news {articolo.get('url')} ({e}) "
@@ -418,7 +457,7 @@ async def send_weather_message(bot: Bot, chat_id: str, topic_id: int | None, tes
             logger.info(f"Meteo pubblicato con snapshot webcam — topic: {kwargs.get('message_thread_id', 'General')}")
             return True
         except TelegramError as e:
-            logger.warning(f"Invio meteo con foto fallito ({e}) — riprovo come solo testo.")
+            logger.warning(f"Invio meteo con foto fallito ({explain(e)}) — riprovo come solo testo.")
 
     try:
         await bot.send_message(
@@ -431,7 +470,7 @@ async def send_weather_message(bot: Bot, chat_id: str, topic_id: int | None, tes
         logger.info(f"Meteo pubblicato — topic: {kwargs.get('message_thread_id', 'General')}")
         return True
     except TelegramError as e:
-        logger.error(f"Impossibile pubblicare il meteo nel gruppo {chat_id}: {e}")
+        logger.error(f"Impossibile pubblicare il meteo nel gruppo {chat_id}: {explain(e)}")
         return False
 
 
