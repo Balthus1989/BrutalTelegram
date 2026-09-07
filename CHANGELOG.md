@@ -17,6 +17,8 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+## [1.1.0] - 2026-09-07
+
 ### Aggiunto
 
 - Versionamento del bot: `version.py` come unica fonte di verità, comando
