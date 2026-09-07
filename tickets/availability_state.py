@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from storage import data_file
+from tickets.availability_scraper import is_sold_out
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def make_record(product: dict, level: int) -> dict:
         "url": product.get("url"),
         "level": level,
         "percent": percent,
-        "sold_out": bool(product.get("sold_out")) or (percent is not None and percent <= 0),
+        "sold_out": is_sold_out(product),
         "missing_count": 0,
         "updated": now_iso(),
     }

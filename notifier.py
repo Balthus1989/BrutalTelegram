@@ -14,7 +14,7 @@ from telegram.constants import ParseMode
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from news.news_scraper import fetch_article
-from tickets.availability_scraper import ALERT_STEP, level_of
+from tickets.availability_scraper import ALERT_STEP, is_sold_out, level_of
 from tickets.ticket_scraper import get_face_value
 from weather_forecast.weather import (
     FESTIVAL_END,
@@ -513,15 +513,26 @@ def format_percent(percent: float | None) -> str:
     return f"{math.floor(percent * 10) / 10:.1f}".replace(".", ",") + "%"
 
 
-def _product_block(name: str | None, url: str | None, percent: float | None) -> str:
+def _product_block(
+    name: str | None,
+    url: str | None,
+    percent: float | None,
+    sold_out: bool = False,
+) -> str:
     """
     Nome, disponibilità e link di un biglietto.
+
+    Di un biglietto esaurito si dice il sold out e non "Disponibili: 0,0%", e si
+    omette il link all'acquisto: manda su una pagina dove non si compra nulla.
 
     I nomi arrivano dal sito e contengono parentesi quadre ("[e-ticket]") che in
     Markdown verrebbero interpretate come link: questi messaggi usano HTML, con
     il nome sempre passato per html.escape.
     """
     righe = [f"🎟️ <b>{html.escape(name or 'Biglietto')}</b>"]
+    if sold_out:
+        righe.append("🔴 <b>SOLD OUT</b>")
+        return "\n".join(righe)
     righe.append(f"📊 Disponibili: <b>{format_percent(percent)}</b>")
     if url:
         righe.append(f"👉 <a href=\"{html.escape(url, quote=True)}\">Vai al biglietto</a>")
@@ -539,7 +550,10 @@ def format_availability_intro(products: list[dict]) -> str:
             "fino al sold out."
         )
 
-    blocchi = [_product_block(p.get("name"), p.get("url"), p.get("percent")) for p in products]
+    blocchi = [
+        _product_block(p.get("name"), p.get("url"), p.get("percent"), is_sold_out(p))
+        for p in products
+    ]
     return (
         "🔎 <b>Monitoraggio biglietti attivo</b>\n\n"
         "Disponibilità attuale sul sito ufficiale:\n\n"
@@ -565,13 +579,10 @@ def format_availability_status(products: list[dict]) -> str:
     blocchi = []
     for p in products:
         percent = p.get("percent")
+        sold_out = is_sold_out(p)
 
-        if p.get("sold_out") or (percent is not None and percent <= 0):
-            blocchi.append(f"🔴 <b>{html.escape(p.get('name') or 'Biglietto')}</b>\nSOLD OUT")
-            continue
-
-        blocco = _product_block(p.get("name"), p.get("url"), percent)
-        if percent is not None:
+        blocco = _product_block(p.get("name"), p.get("url"), percent, sold_out)
+        if not sold_out and percent is not None:
             # Il prossimo alert scatta uscendo dallo scaglione attuale; sotto il
             # 5% non resta nessuna soglia intermedia, solo l'esaurimento.
             soglia = level_of(percent)

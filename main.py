@@ -24,6 +24,7 @@ from tickets.availability_scraper import (
     ALERT_STEP,
     PRODUCT_MATCH,
     fetch_ticket_availability,
+    is_sold_out,
     level_of,
     levels_crossed,
 )
@@ -185,13 +186,21 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
 
     # Una barra illeggibile non è un esaurimento: quei prodotti vengono saltati
     # per questo ciclo, ma restano "visti" e non maturano un sold out.
+    #
+    # Un biglietto esaurito invece non ha nessuna barra da leggere: va trattato
+    # come disponibilità zero, altrimenti finirebbe tra quelli "illeggibili" e
+    # verrebbe saltato a ogni ciclo senza che il sold out venga mai annunciato.
     seen_ids = {p["id"] for p in products}
-    readable = [p for p in products if p["percent"] is not None]
+    readable = []
     for p in products:
+        if p["percent"] is None and p["sold_out"]:
+            p["percent"] = 0.0
         if p["percent"] is None:
             logger.warning(
                 f"Disponibilità non leggibile per '{p['name']}': prodotto saltato in questo ciclo."
             )
+            continue
+        readable.append(p)
 
     if not state["initialized"]:
         # Messaggio iniziale: serve anche a verificare che il bot scriva nel
@@ -217,9 +226,14 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
         if record is None:
             # Biglietto comparso dopo l'avvio del monitoraggio (nuova tipologia
             # messa in vendita): lo si annuncia e si parte a tracciarlo da qui.
-            if await send_availability_message(
-                app.bot, chat_id, topic_id, format_availability_new(p)
-            ):
+            # Se compare già esaurito non è una nuova vendita da annunciare come
+            # tale: si dà direttamente il sold out.
+            testo = (
+                format_availability_sold_out(p, still_listed=True)
+                if is_sold_out(p)
+                else format_availability_new(p)
+            )
+            if await send_availability_message(app.bot, chat_id, topic_id, testo):
                 known[p["id"]] = make_availability_record(p, level)
             continue
 
@@ -231,7 +245,7 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
 
         # Il sold out va verificato a parte: sotto il 5% la banda è già 0, quindi
         # l'esaurimento non produrrebbe nessun cambio di scaglione da notificare.
-        sold_out = p["sold_out"] or percent <= 0
+        sold_out = is_sold_out(p)
 
         if sold_out and not record.get("sold_out"):
             logger.info(f"'{record['name']}': SOLD OUT ({previous_percent}% → {percent}%).")
@@ -415,7 +429,7 @@ async def cmd_availability(update, context) -> None:
         return
 
     # Un prodotto esaurito può non avere più la barra: va mostrato lo stesso.
-    leggibili = [p for p in products if p["percent"] is not None or p["sold_out"]]
+    leggibili = [p for p in products if p["percent"] is not None or is_sold_out(p)]
     if products and not leggibili:
         await update.message.reply_text(
             "❌ Pagina raggiungibile ma barra di disponibilità illeggibile. Riprova più tardi."

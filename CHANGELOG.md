@@ -25,6 +25,18 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 - `release.py`: avanza la versione (`major`/`minor`/`patch`), sposta le voci di
   `[Non rilasciato]` nella nuova sezione del CHANGELOG, crea commit e tag `vX.Y.Z`
 
+### Corretto
+
+- Il sold out di una tipologia di biglietto non veniva mai annunciato nel
+  gruppo: un biglietto esaurito non mostra la barra di disponibilità ma la
+  scritta "Sold out", che veniva letta come disponibilità non leggibile e
+  faceva saltare il prodotto a ogni controllo. Ora l'esaurimento è riconosciuto
+  dalla scritta nella scheda e dal badge nella pagina elenco, e vale come
+  disponibilità zero
+- Un biglietto esaurito non viene più mostrato come "Disponibili: 0,0%" con il
+  link all'acquisto nel riepilogo iniziale, e se compare già esaurito viene
+  annunciato come sold out invece che come nuova vendita
+
 ## [1.0.0] - 2026-08-28
 
 Prima versione numerata: fotografa il bot già in esercizio su Fly.io.

@@ -46,6 +46,31 @@ ALERT_STEP = 5
 
 _WIDTH_RE = re.compile(r"width\s*:\s*([0-9]+(?:[.,][0-9]+)?)\s*%")
 
+# Un prodotto esaurito non mostra la barra: al suo posto la scheda scrive
+#
+#     <div class="product_availability"><span>Available</span>:
+#       <strong style="color:#d50628">Sold out</strong>
+#     </div>
+#
+# cioè un testo, senza nessuna classe CSS da cui riconoscerlo. È il caso di
+# tutti i biglietti esauriti visti sul sito: senza questo controllo la loro
+# disponibilità risultava semplicemente "non leggibile".
+_SOLD_OUT_TEXT_RE = re.compile(r"sold\s*out", re.IGNORECASE)
+
+
+def is_sold_out(product: dict) -> bool:
+    """
+    True se il biglietto risulta esaurito: badge del sito o disponibilità a zero.
+
+    Una disponibilità non leggibile (percent None e nessun badge) non è un
+    esaurimento. Definizione unica per scraper, stato e messaggi: quando ognuno
+    aveva la sua, un prodotto esaurito senza barra risultava sold out per il
+    comando /availability e "illeggibile" per il ciclo di controllo, che lo
+    saltava senza annunciare niente.
+    """
+    percent = product.get("percent")
+    return bool(product.get("sold_out")) or (percent is not None and percent <= 0)
+
 
 def level_of(percent: float) -> int:
     """
@@ -130,7 +155,9 @@ def parse_availability(html: str) -> tuple[Optional[float], bool, Optional[str]]
     Returns:
         (percent, sold_out, name)
         percent è None se la barra di disponibilità non è leggibile: in quel caso
-        il ciclo va saltato, non interpretato come esaurimento.
+        il ciclo va saltato, non interpretato come esaurimento. Se invece il
+        prodotto è dichiarato esaurito percent è 0.0, perché la barra non c'è
+        proprio e senza questo la disponibilità resterebbe "non leggibile".
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -138,7 +165,14 @@ def parse_availability(html: str) -> tuple[Optional[float], bool, Optional[str]]
     name = heading.get_text(strip=True) if heading else None
 
     block = soup.find(class_="product_availability")
-    sold_out = _has_sold_out_badge(soup.find(class_="product_image-wrap")) or _has_sold_out_badge(block)
+    sold_out = (
+        _has_sold_out_badge(soup.find(class_="product_image-wrap"))
+        or _has_sold_out_badge(block)
+        # Il "Sold out" scritto in chiaro al posto della barra: cercato solo
+        # dentro il blocco disponibilità, così un "sold out" nella descrizione
+        # o in un altro punto della pagina non esaurisce il biglietto.
+        or (block is not None and bool(_SOLD_OUT_TEXT_RE.search(block.get_text(" ", strip=True))))
+    )
 
     percent = None
     if block is not None:
@@ -169,12 +203,23 @@ async def _fetch_product(client: httpx.AsyncClient, product: dict) -> Optional[d
         logger.warning(f"Scheda prodotto {product['id']} non parsabile: {e}")
         return None
 
+    # Il badge <span class="sold_out"> dell'elenco vale quanto la scheda: sono
+    # due segnali indipendenti dello stesso esaurimento, e basta che uno dei due
+    # regga a un cambio di template perché il sold out venga comunque visto.
+    sold_out = sold_out or product["sold_out"]
+
+    # Senza questo ripiego il prodotto esaurito resterebbe con percent None,
+    # cioè "disponibilità non leggibile", e il ciclo lo salterebbe a ogni
+    # controllo senza mai annunciare il sold out.
+    if percent is None and sold_out:
+        percent = 0.0
+
     return {
         "id": product["id"],
         "name": name or product["title"],
         "url": product["url"],
         "percent": percent,
-        "sold_out": sold_out or product["sold_out"],
+        "sold_out": sold_out,
     }
 
 

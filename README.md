@@ -44,6 +44,10 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
 - Se tra due controlli la disponibilita crolla di piu scaglioni, l'alert resta uno solo
   ma cita le soglie bruciate; una risalita (nuova tranche in vendita) non genera alert
   ma rialza la soglia, cosi le discese successive tornano a essere notificate
+- Il sold out di una tipologia viene annunciato appena il sito la da per esaurita: un
+  biglietto esaurito non ha piu la barra "Available" ma la scritta "Sold out", e nella
+  pagina elenco un badge rosso — vale ognuno dei due segnali, cosi un cambio di
+  template non fa passare l'esaurimento sotto silenzio
 - Una pagina non parsabile o una barra illeggibile non vengono mai interpretate come
   sold out, e un biglietto sparito dallo shop viene dichiarato esaurito solo dopo
   2 cicli consecutivi di assenza

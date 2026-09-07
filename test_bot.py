@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import main, notifier
 from telegram.error import BadRequest, NetworkError
-from tickets import availability_state, ticket_state
+from tickets import availability_scraper, availability_state, ticket_state
 from weather_forecast import weather, weather_state
 
 CHAT = "-100123456789"
@@ -458,6 +458,89 @@ check("rimanda al Ticket Exchange", "xchange" in bote.sent[0]["text"])
 asyncio.run(run_avail(bote, [prodotto(0.0, sold_out=True)]))
 check("nessun doppione di sold out", len(bote.sent) == 1)
 
+print("\n=== 26b. Markup reale del sold out -> disponibilità zero, non 'illeggibile' ===")
+# Un biglietto esaurito non ha la barra: al suo posto il sito scrive "Sold out",
+# senza nessuna classe CSS. Prima veniva letto come disponibilità non leggibile
+# e il ciclo lo saltava per sempre, senza mai annunciare l'esaurimento.
+SCHEDA_SOLD_OUT = """
+<h1 itemprop="name" class="product_title page_title">BA 2027 VIP lounge LEFT [e-ticket]</h1>
+<div class="product_availability"><span>Available</span>:
+  <strong style="color:#d50628">Sold out</strong> </div>
+"""
+percent, sold_out, nome = availability_scraper.parse_availability(SCHEDA_SOLD_OUT)
+check("'Sold out' in chiaro riconosciuto", sold_out is True)
+check("disponibilità azzerata, non None", percent == 0.0)
+check("nome letto dalla scheda", nome == "BA 2027 VIP lounge LEFT [e-ticket]")
+
+SCHEDA_IN_VENDITA = """
+<h1 class="product_title page_title">first edition BRUTAL ASSAULT 2027 festival pass [e-ticket]</h1>
+<div class="product_availability"><span>Available</span>: <div id="progress" class="graph">
+  <div id="bar" class="orange" style="width:20.321264660887%"><p>20%</p></div></div></div>
+"""
+percent, sold_out, _ = availability_scraper.parse_availability(SCHEDA_IN_VENDITA)
+check("biglietto in vendita non dato per esaurito", sold_out is False)
+check("percentuale precisa dallo stile inline", percent == 20.321264660887)
+
+SCHEDA_PAROLA_ALTROVE = """
+<h1 class="product_title">BA 2027 natural stand [e-ticket]</h1>
+<p>Nel 2026 questo biglietto è andato sold out in due giorni.</p>
+<div class="product_availability"><span>Available</span>:
+  <div id="bar" style="width:42%"><p>42%</p></div></div>
+"""
+percent, sold_out, _ = availability_scraper.parse_availability(SCHEDA_PAROLA_ALTROVE)
+check("'sold out' fuori dal blocco disponibilità ignorato", sold_out is False and percent == 42.0)
+
+# Secondo segnale indipendente: il badge rosso nella pagina elenco.
+ELENCO = """
+<div class="product-1109 product item ticket ticket_item product-item ">
+  <div class="product_image-wrap"><span class="sold_out">sold out</span>
+    <a href="/en/tickets/detail/id/1109" class="product-grid-image"><img alt=""></a></div>
+  <div class="product_title-wrap">
+    <a href="/en/tickets/detail/id/1109" class="product_title">BA 2027 natural stand [e-ticket]</a></div>
+</div>
+<div class="product-1104 product item ticket ticket_item product-item ">
+  <div class="product_image-wrap">
+    <a href="/en/tickets/detail/id/1104" class="product-grid-image"><img alt=""></a></div>
+  <div class="product_title-wrap">
+    <a href="/en/tickets/detail/id/1104" class="product_title">first edition BRUTAL ASSAULT 2027 festival pass</a></div>
+</div>
+"""
+badge = {p["id"]: p["sold_out"] for p in availability_scraper.parse_product_links(ELENCO)}
+check("badge dell'elenco letto per prodotto", badge == {"1109": True, "1104": False})
+
+print("\n=== 26c. Barra sparita ma biglietto esaurito -> sold out annunciato ===")
+reset_avail()
+botk = FakeBot()
+asyncio.run(run_avail(botk, [prodotto(30.0)]))     # riepilogo iniziale
+botk.sent.clear()
+# Nessuna barra da leggere, ma il sito lo dà per esaurito: non è una pagina
+# illeggibile da saltare (cfr. test 28), è un sold out da annunciare.
+asyncio.run(run_avail(botk, [prodotto(None, sold_out=True)]))
+check("sold out annunciato anche senza barra", len(botk.sent) == 1 and "SOLD OUT" in botk.sent[0]["text"])
+check("registrato come esaurito", availability_state.load_availability_state()["products"]["1104"]["sold_out"] is True)
+asyncio.run(run_avail(botk, [prodotto(None, sold_out=True)]))
+check("nessun doppione ai cicli successivi", len(botk.sent) == 1)
+
+print("\n=== 26d. Disponibilità a zero senza badge -> sold out annunciato ===")
+reset_avail()
+botl = FakeBot()
+asyncio.run(run_avail(botl, [prodotto(12.0)]))     # riepilogo iniziale
+botl.sent.clear()
+asyncio.run(run_avail(botl, [prodotto(0.0)]))
+check("lo zero per cento è un sold out", len(botl.sent) == 1 and "SOLD OUT" in botl.sent[0]["text"])
+check("non annunciato come 'Disponibili: 0,0%'", "Disponibili" not in botl.sent[0]["text"])
+check("rimanda al Ticket Exchange", "xchange" in botl.sent[0]["text"])
+
+print("\n=== 26e. Riepilogo iniziale -> l'esaurito non è 'Disponibili: 0,0%' ===")
+intro = notifier.format_availability_intro([
+    prodotto(0.0, sold_out=True),
+    prodotto(30.0, pid="1200", name="BA 2027 VIP lounge RIGHT [e-ticket]"),
+])
+check("sold out detto nel riepilogo", "SOLD OUT" in intro)
+check("niente percentuale a zero", "Disponibili: <b>0,0%" not in intro)
+check("nessun link d'acquisto per l'esaurito", intro.count("Vai al biglietto") == 1)
+check("il biglietto in vendita resta con la sua percentuale", "30,0%" in intro)
+
 print("\n=== 27. Biglietto sparito dalla pagina -> sold out dopo conferma ===")
 reset_avail()
 botf = FakeBot()
@@ -505,6 +588,22 @@ asyncio.run(run_avail(boti, [prodotto(29.0), prodotto(90.0, pid="1200", name="BR
 check("nuovo biglietto annunciato", len(boti.sent) == 1 and "Nuovo biglietto" in boti.sent[0]["text"])
 check("percentuale del nuovo biglietto", "90,0%" in boti.sent[0]["text"])
 check("entrambi tracciati", set(availability_state.load_availability_state()["products"]) == {"1104", "1200"})
+
+print("\n=== 30b. Nuovo biglietto già esaurito -> sold out, non 'in vendita' ===")
+reset_avail()
+botm = FakeBot()
+asyncio.run(run_avail(botm, [prodotto(40.0)]))     # riepilogo iniziale
+botm.sent.clear()
+asyncio.run(run_avail(botm, [
+    prodotto(40.0),
+    prodotto(0.0, pid="1210", name="BA 2027 VIP lounge RIGHT [e-ticket]", sold_out=True),
+]))
+check("un solo messaggio", len(botm.sent) == 1)
+check("annunciato come sold out", "SOLD OUT" in botm.sent[0]["text"])
+check("non spacciato per nuova vendita", "Nuovo biglietto" not in botm.sent[0]["text"])
+stato = availability_state.load_availability_state()["products"]
+check("tracciato come esaurito", stato["1210"]["sold_out"] is True)
+check("nessun secondo annuncio al ciclo dopo", stato["1104"]["sold_out"] is False)
 
 print("\n=== 31. Nomi con caratteri speciali -> HTML valido ===")
 botj = FakeBot()
