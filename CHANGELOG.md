@@ -34,8 +34,13 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
   dalla scritta nella scheda e dal badge nella pagina elenco, e vale come
   disponibilità zero
 - Un biglietto esaurito non viene più mostrato come "Disponibili: 0,0%" con il
-  link all'acquisto nel riepilogo iniziale, e se compare già esaurito viene
-  annunciato come sold out invece che come nuova vendita
+  link all'acquisto nel riepilogo iniziale
+- Un biglietto che compare già esaurito non genera nessun annuncio — il gruppo
+  non ha mai saputo che esistesse — e viene annunciato come nuovo solo se torna
+  acquistabile
+- Un biglietto tornato in vendita sotto il 5% dopo un esaurimento restava
+  marcato come sold out: `/status` lo dava per esaurito e l'esaurimento
+  successivo non veniva più annunciato
 
 ## [1.0.0] - 2026-08-28
 

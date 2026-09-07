@@ -224,16 +224,27 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
         record = known.get(p["id"])
 
         if record is None:
+            if is_sold_out(p):
+                # Comparso già esaurito: non c'è nessuna vendita da annunciare, e
+                # nemmeno un sold out — il gruppo non ha mai saputo che questo
+                # biglietto esistesse, un "è finito" su qualcosa che non è mai
+                # stato in vendita sarebbe solo rumore.
+                #
+                # Non viene nemmeno messo sotto osservazione: così, se un giorno
+                # torna acquistabile, ricade qui come biglietto sconosciuto e
+                # viene annunciato come nuovo. Tracciarlo adesso lo renderebbe
+                # invisibile per sempre.
+                logger.info(
+                    f"'{p['name']}' compare già esaurito: nessun annuncio, "
+                    f"si aspetta che torni in vendita."
+                )
+                continue
+
             # Biglietto comparso dopo l'avvio del monitoraggio (nuova tipologia
             # messa in vendita): lo si annuncia e si parte a tracciarlo da qui.
-            # Se compare già esaurito non è una nuova vendita da annunciare come
-            # tale: si dà direttamente il sold out.
-            testo = (
-                format_availability_sold_out(p, still_listed=True)
-                if is_sold_out(p)
-                else format_availability_new(p)
-            )
-            if await send_availability_message(app.bot, chat_id, topic_id, testo):
+            if await send_availability_message(
+                app.bot, chat_id, topic_id, format_availability_new(p)
+            ):
                 known[p["id"]] = make_availability_record(p, level)
             continue
 
@@ -246,6 +257,17 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
         # Il sold out va verificato a parte: sotto il 5% la banda è già 0, quindi
         # l'esaurimento non produrrebbe nessun cambio di scaglione da notificare.
         sold_out = is_sold_out(p)
+
+        if not sold_out and record.get("sold_out"):
+            # Tornato acquistabile dopo un esaurimento (nuova tranche immessa in
+            # vendita). Il flag va azzerato qui e non nel ramo della risalita:
+            # se rientra sotto il 5% lo scaglione resta 0, quel ramo non scatta e
+            # il biglietto resterebbe marcato esaurito pur essendo in vendita —
+            # con l'esaurimento successivo mai più annunciato.
+            logger.info(
+                f"'{record['name']}' di nuovo in vendita al {percent}% dopo il sold out."
+            )
+            record["sold_out"] = False
 
         if sold_out and not record.get("sold_out"):
             logger.info(f"'{record['name']}': SOLD OUT ({previous_percent}% → {percent}%).")
@@ -267,7 +289,6 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
                     f"(scaglione {previous_level}% → {level}%)."
                 )
                 record["level"] = level
-                record["sold_out"] = False
             record["percent"] = percent
             continue
 

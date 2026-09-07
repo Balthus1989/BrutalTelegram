@@ -589,21 +589,42 @@ check("nuovo biglietto annunciato", len(boti.sent) == 1 and "Nuovo biglietto" in
 check("percentuale del nuovo biglietto", "90,0%" in boti.sent[0]["text"])
 check("entrambi tracciati", set(availability_state.load_availability_state()["products"]) == {"1104", "1200"})
 
-print("\n=== 30b. Nuovo biglietto già esaurito -> sold out, non 'in vendita' ===")
+print("\n=== 30b. Nuovo biglietto già esaurito -> nessun annuncio, ma annunciato se torna ===")
 reset_avail()
 botm = FakeBot()
 asyncio.run(run_avail(botm, [prodotto(40.0)]))     # riepilogo iniziale
 botm.sent.clear()
-asyncio.run(run_avail(botm, [
-    prodotto(40.0),
-    prodotto(0.0, pid="1210", name="BA 2027 VIP lounge RIGHT [e-ticket]", sold_out=True),
-]))
-check("un solo messaggio", len(botm.sent) == 1)
-check("annunciato come sold out", "SOLD OUT" in botm.sent[0]["text"])
-check("non spacciato per nuova vendita", "Nuovo biglietto" not in botm.sent[0]["text"])
-stato = availability_state.load_availability_state()["products"]
-check("tracciato come esaurito", stato["1210"]["sold_out"] is True)
-check("nessun secondo annuncio al ciclo dopo", stato["1104"]["sold_out"] is False)
+VIP = dict(pid="1210", name="BA 2027 VIP lounge RIGHT [e-ticket]")
+# Un "è finito" su un biglietto che il gruppo non ha mai visto in vendita
+# sarebbe solo rumore: si tace e non lo si mette nemmeno sotto osservazione.
+asyncio.run(run_avail(botm, [prodotto(40.0), prodotto(0.0, sold_out=True, **VIP)]))
+check("nessun annuncio per un biglietto mai stato in vendita", botm.sent == [])
+check("non tracciato", "1210" not in availability_state.load_availability_state()["products"])
+asyncio.run(run_avail(botm, [prodotto(40.0), prodotto(0.0, sold_out=True, **VIP)]))
+check("nessun annuncio nemmeno ai cicli dopo", botm.sent == [])
+# Tornato acquistabile: ora è una novità vera per il gruppo.
+asyncio.run(run_avail(botm, [prodotto(40.0), prodotto(75.0, **VIP)]))
+check("annunciato quando torna in vendita", len(botm.sent) == 1 and "Nuovo biglietto" in botm.sent[0]["text"])
+check("con la sua disponibilità", "75,0%" in botm.sent[0]["text"])
+check("ora tracciato", "1210" in availability_state.load_availability_state()["products"])
+
+print("\n=== 30c. Esaurito, tornato in vendita, esaurito di nuovo -> due annunci ===")
+reset_avail()
+botn = FakeBot()
+asyncio.run(run_avail(botn, [prodotto(8.0)]))      # riepilogo iniziale
+botn.sent.clear()
+asyncio.run(run_avail(botn, [prodotto(0.0, sold_out=True)]))
+check("primo sold out annunciato", len(botn.sent) == 1 and "SOLD OUT" in botn.sent[0]["text"])
+# Nuova tranche, ma sotto il 5%: lo scaglione resta 0 e il ramo della risalita
+# non scatta. Se il flag non venisse azzerato qui, il biglietto resterebbe
+# marcato esaurito pur essendo in vendita.
+botn.sent.clear()
+asyncio.run(run_avail(botn, [prodotto(3.0)]))
+stato = availability_state.load_availability_state()["products"]["1104"]
+check("non più marcato esaurito sotto il 5%", stato["sold_out"] is False)
+check("nessun alert per il rientro", botn.sent == [])
+asyncio.run(run_avail(botn, [prodotto(0.0, sold_out=True)]))
+check("il secondo sold out viene annunciato", len(botn.sent) == 1 and "SOLD OUT" in botn.sent[0]["text"])
 
 print("\n=== 31. Nomi con caratteri speciali -> HTML valido ===")
 botj = FakeBot()
