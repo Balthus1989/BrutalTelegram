@@ -17,6 +17,8 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+## [1.2.0] - 2026-09-09
+
 ### Aggiunto
 
 - Monitoraggio della disponibilità di hotel e campeggi della pagina
