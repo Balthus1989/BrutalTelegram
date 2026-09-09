@@ -7,6 +7,7 @@ import html
 import math
 import logging
 import io
+from dataclasses import dataclass
 from telegram import Bot
 from telegram.ext import Application
 from telegram.error import BadRequest, TelegramError
@@ -30,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 # Limite di Telegram per la caption di una foto (il testo di un messaggio arriva a 4096).
 MAX_CAPTION_LENGTH = 1024
+
+# Limite di Telegram per il testo di un messaggio. Superarlo non tronca: l'invio
+# viene rifiutato e il messaggio non arriva affatto.
+MAX_MESSAGE_LENGTH = 4096
 
 # Rifiuti di Telegram che dipendono dalla configurazione del gruppo, non dal bot:
 # da soli ("Topic_closed") non dicono cosa fare, e il messaggio continua a fallire
@@ -493,10 +498,66 @@ async def send_weather(app: Application, chat_id: str, topic_id: int = None) -> 
 
 
 # ---------------------------------------------------------------------------
-# Disponibilità dei biglietti in vendita sul sito ufficiale
+# Disponibilità dei prodotti in vendita sul sito ufficiale
 # ---------------------------------------------------------------------------
 
 XCHANGE_PAGE = "https://brutalassault.cz/en/xchange"
+ACCOMMODATION_PAGE = "https://brutalassault.cz/en/accommodation"
+
+
+@dataclass(frozen=True)
+class AvailabilityLabels:
+    """
+    Come chiamare le cose nei messaggi sulla disponibilità.
+
+    Biglietti e alloggi hanno lo stesso ciclo di monitoraggio e gli stessi
+    messaggi: cambiano solo le parole. Tenerle in un bundle evita una seconda
+    copia dei formatter, che divergerebbe alla prima correzione fatta su una
+    sola delle due — è già successo con is_sold_out().
+    """
+    emoji: str            # accanto al nome del prodotto
+    item: str             # "Biglietto": nome di ripiego e "Nuovo <item> in vendita"
+    plural: str           # "Biglietti": titolo dell'alert di soglia
+    section: str          # "biglietti": "Monitoraggio <section> attivo"
+    link_text: str        # testo del link alla scheda
+    status_title: str     # titolo della risposta al comando
+    none_on_sale: str     # frase per "niente in vendita al momento"
+    sold_out_reason: str  # perché non si compra più, se il prodotto è ancora in pagina
+    sold_out_tail: str    # dove mandare il gruppo dopo un sold out
+
+
+TICKET_LABELS = AvailabilityLabels(
+    emoji="🎟️",
+    item="Biglietto",
+    plural="Biglietti",
+    section="biglietti",
+    link_text="Vai al biglietto",
+    status_title="Biglietti in vendita sul sito ufficiale",
+    none_on_sale="non risulta in vendita nessun biglietto",
+    sold_out_reason="I biglietti sono esauriti sul sito ufficiale.",
+    sold_out_tail=(
+        f"🎟️ Resta il <a href=\"{XCHANGE_PAGE}\">Ticket Exchange</a>: "
+        "gli annunci di rivendita vengono pubblicati qui in automatico."
+    ),
+)
+
+ACCOMMODATION_LABELS = AvailabilityLabels(
+    emoji="🏨",
+    item="Alloggio",
+    plural="Posti",
+    section="alloggi",
+    link_text="Vai all'alloggio",
+    status_title="Hotel e campeggi sul sito ufficiale",
+    none_on_sale="non risulta in vendita nessun alloggio",
+    sold_out_reason="I posti sono esauriti sul sito ufficiale.",
+    # Per gli alloggi non esiste un mercato di rivendita come il Ticket
+    # Exchange: l'unica cosa vera da dire è che il gruppo verrà avvisato se il
+    # sito rimette in vendita dei posti.
+    sold_out_tail=(
+        f"🏨 Se sulla <a href=\"{ACCOMMODATION_PAGE}\">pagina alloggi</a> tornano "
+        "posti disponibili, lo scrivo qui."
+    ),
+)
 
 
 def format_percent(percent: float | None) -> str:
@@ -518,44 +579,50 @@ def _product_block(
     url: str | None,
     percent: float | None,
     sold_out: bool = False,
+    labels: AvailabilityLabels = TICKET_LABELS,
 ) -> str:
     """
-    Nome, disponibilità e link di un biglietto.
+    Nome, disponibilità e link di un prodotto.
 
-    Di un biglietto esaurito si dice il sold out e non "Disponibili: 0,0%", e si
+    Di un prodotto esaurito si dice il sold out e non "Disponibili: 0,0%", e si
     omette il link all'acquisto: manda su una pagina dove non si compra nulla.
 
     I nomi arrivano dal sito e contengono parentesi quadre ("[e-ticket]") che in
     Markdown verrebbero interpretate come link: questi messaggi usano HTML, con
     il nome sempre passato per html.escape.
     """
-    righe = [f"🎟️ <b>{html.escape(name or 'Biglietto')}</b>"]
+    righe = [f"{labels.emoji} <b>{html.escape(name or labels.item)}</b>"]
     if sold_out:
         righe.append("🔴 <b>SOLD OUT</b>")
         return "\n".join(righe)
     righe.append(f"📊 Disponibili: <b>{format_percent(percent)}</b>")
     if url:
-        righe.append(f"👉 <a href=\"{html.escape(url, quote=True)}\">Vai al biglietto</a>")
+        righe.append(
+            f"👉 <a href=\"{html.escape(url, quote=True)}\">{labels.link_text}</a>"
+        )
     return "\n".join(righe)
 
 
-def format_availability_intro(products: list[dict]) -> str:
+def format_availability_intro(
+    products: list[dict],
+    labels: AvailabilityLabels = TICKET_LABELS,
+) -> str:
     """Riepilogo pubblicato la prima volta che il monitoraggio parte."""
     if not products:
         return (
-            "🔎 <b>Monitoraggio biglietti attivo</b>\n\n"
-            "Al momento sul sito ufficiale non risulta in vendita nessun biglietto "
+            f"🔎 <b>Monitoraggio {labels.section} attivo</b>\n\n"
+            f"Al momento sul sito ufficiale {labels.none_on_sale} "
             "per la nuova edizione: vi avviso appena compare.\n\n"
             f"🔔 Poi vi aggiorno a ogni scaglione del {ALERT_STEP}% di disponibilità, "
             "fino al sold out."
         )
 
     blocchi = [
-        _product_block(p.get("name"), p.get("url"), p.get("percent"), is_sold_out(p))
+        _product_block(p.get("name"), p.get("url"), p.get("percent"), is_sold_out(p), labels)
         for p in products
     ]
     return (
-        "🔎 <b>Monitoraggio biglietti attivo</b>\n\n"
+        f"🔎 <b>Monitoraggio {labels.section} attivo</b>\n\n"
         "Disponibilità attuale sul sito ufficiale:\n\n"
         + "\n\n".join(blocchi)
         + f"\n\n🔔 Vi avviso a ogni scaglione del {ALERT_STEP}% "
@@ -563,17 +630,20 @@ def format_availability_intro(products: list[dict]) -> str:
     )
 
 
-def format_availability_status(products: list[dict]) -> str:
+def format_availability_status(
+    products: list[dict],
+    labels: AvailabilityLabels = TICKET_LABELS,
+) -> str:
     """
-    Risposta al comando /availability: la disponibilità del momento.
+    Risposta ai comandi /availability e /accommodation: la disponibilità del momento.
 
     Diverso da format_availability_intro(), che annuncia l'avvio del
     monitoraggio e ha senso una volta sola.
     """
     if not products:
         return (
-            "🎟️ <b>Biglietti sul sito ufficiale</b>\n\n"
-            "Al momento non risulta in vendita nessun biglietto per la prossima edizione."
+            f"{labels.emoji} <b>{labels.status_title}</b>\n\n"
+            f"Al momento {labels.none_on_sale} per la prossima edizione."
         )
 
     blocchi = []
@@ -581,7 +651,7 @@ def format_availability_status(products: list[dict]) -> str:
         percent = p.get("percent")
         sold_out = is_sold_out(p)
 
-        blocco = _product_block(p.get("name"), p.get("url"), percent, sold_out)
+        blocco = _product_block(p.get("name"), p.get("url"), percent, sold_out, labels)
         if not sold_out and percent is not None:
             # Il prossimo alert scatta uscendo dallo scaglione attuale; sotto il
             # 5% non resta nessuna soglia intermedia, solo l'esaurimento.
@@ -589,14 +659,19 @@ def format_availability_status(products: list[dict]) -> str:
             blocco += f"\n🔔 Prossimo avviso: {f'sotto il {soglia}%' if soglia else 'il sold out'}"
         blocchi.append(blocco)
 
-    return "🎟️ <b>Biglietti in vendita sul sito ufficiale</b>\n\n" + "\n\n".join(blocchi)
+    return f"{labels.emoji} <b>{labels.status_title}</b>\n\n" + "\n\n".join(blocchi)
 
 
-def format_availability_new(product: dict) -> str:
-    """Un biglietto dell'edizione monitorata è appena comparso in vendita."""
+def format_availability_new(
+    product: dict,
+    labels: AvailabilityLabels = TICKET_LABELS,
+) -> str:
+    """Un prodotto dell'edizione monitorata è appena comparso in vendita."""
     return (
-        "🆕 <b>Nuovo biglietto in vendita sul sito ufficiale!</b>\n\n"
-        + _product_block(product.get("name"), product.get("url"), product.get("percent"))
+        f"🆕 <b>Nuovo {labels.item.lower()} in vendita sul sito ufficiale!</b>\n\n"
+        + _product_block(
+            product.get("name"), product.get("url"), product.get("percent"), False, labels
+        )
         + "\n\n🏰 <i>Brutal Assault — Josefov</i>"
     )
 
@@ -606,6 +681,7 @@ def format_availability_alert(
     soglia: int,
     previous_percent: float | None,
     crossed: list[int],
+    labels: AvailabilityLabels = TICKET_LABELS,
 ) -> str:
     """
     Alert per una soglia di disponibilità appena superata verso il basso.
@@ -613,8 +689,12 @@ def format_availability_alert(
     Args:
         soglia: la soglia più bassa effettivamente superata (l'ultima di `crossed`).
     """
-    righe = [f"⚠️ <b>Biglietti sotto il {soglia}%!</b>", ""]
-    righe.append(_product_block(product.get("name"), product.get("url"), product.get("percent")))
+    righe = [f"⚠️ <b>{labels.plural} sotto il {soglia}%!</b>", ""]
+    righe.append(
+        _product_block(
+            product.get("name"), product.get("url"), product.get("percent"), False, labels
+        )
+    )
 
     if previous_percent is not None:
         righe.append(f"📉 All'ultimo controllo erano al {format_percent(previous_percent)}")
@@ -630,28 +710,83 @@ def format_availability_alert(
     return "\n".join(righe)
 
 
-def format_availability_sold_out(record: dict, still_listed: bool) -> str:
+def format_availability_sold_out(
+    record: dict,
+    still_listed: bool,
+    labels: AvailabilityLabels = TICKET_LABELS,
+) -> str:
     """
     Messaggio di sold out.
 
     Args:
-        still_listed: il biglietto è ancora sulla pagina (disponibilità a 0),
+        still_listed: il prodotto è ancora sulla pagina (disponibilità a 0),
             contro il caso in cui sia proprio sparito dallo shop.
     """
-    name = html.escape(record.get("name") or "Biglietto")
+    name = html.escape(record.get("name") or labels.item)
     motivo = (
-        "I biglietti sono esauriti sul sito ufficiale."
+        labels.sold_out_reason
         if still_listed
-        else "Il biglietto non è più in vendita sul sito ufficiale "
+        else f"{labels.item} non più in vendita sul sito ufficiale "
         f"(ultima disponibilità rilevata: {format_percent(record.get('percent'))})."
     )
     return (
         f"🔴 <b>SOLD OUT — {name}</b>\n\n"
         f"{motivo}\n\n"
-        f"🎟️ Resta il <a href=\"{XCHANGE_PAGE}\">Ticket Exchange</a>: "
-        "gli annunci di rivendita vengono pubblicati qui in automatico.\n\n"
+        f"{labels.sold_out_tail}\n\n"
         "🏰 <i>Brutal Assault — Josefov</i>"
     )
+
+
+def split_message(testo: str, limit: int = MAX_MESSAGE_LENGTH) -> list[str]:
+    """
+    Spezza in più messaggi un testo troppo lungo per Telegram.
+
+    Serve al riepilogo degli alloggi: la pagina ne elenca quasi trenta e il
+    riepilogo supera i 4096 caratteri. Telegram non tronca, rifiuta — e un
+    riepilogo iniziale rifiutato non salva lo stato, quindi il bot lo
+    ritenterebbe a ogni ciclo senza mai riuscirci e senza mai avvisare nessuno.
+
+    Il taglio cade solo sui confini tra paragrafi, che in questi messaggi
+    separano un prodotto dall'altro: tagliare a lunghezza fissa spezzerebbe un
+    tag HTML a metà e Telegram rifiuterebbe il pezzo.
+    """
+    if len(testo) <= limit:
+        return [testo]
+
+    separatore = "\n\n"
+    parti: list[str] = []
+    corrente = ""
+
+    for paragrafo in testo.split(separatore):
+        candidato = corrente + separatore + paragrafo if corrente else paragrafo
+        if len(candidato) <= limit:
+            corrente = candidato
+            continue
+
+        if corrente:
+            parti.append(corrente)
+            corrente = ""
+
+        if len(paragrafo) <= limit:
+            corrente = paragrafo
+            continue
+
+        # Un singolo paragrafo oltre il limite non capita con i blocchi di
+        # prodotto (poche righe ciascuno), ma se capitasse va spezzato riga per
+        # riga: meglio una formattazione imprecisa che perdere il messaggio.
+        logger.warning(
+            f"Paragrafo di {len(paragrafo)} caratteri oltre il limite di {limit}: "
+            f"spezzato per righe."
+        )
+        for riga in paragrafo.split("\n"):
+            if corrente and len(corrente) + 1 + len(riga) > limit:
+                parti.append(corrente)
+                corrente = ""
+            corrente = corrente + "\n" + riga if corrente else riga[:limit]
+
+    if corrente:
+        parti.append(corrente)
+    return parti
 
 
 async def send_availability_message(
@@ -663,18 +798,22 @@ async def send_availability_message(
     """
     Pubblica un messaggio sulla disponibilità nel topic dei biglietti.
 
+    Un testo oltre il limite di Telegram viene pubblicato come più messaggi
+    consecutivi, spezzato tra un prodotto e l'altro.
+
     Returns:
-        True se il messaggio è stato pubblicato: solo in quel caso il chiamante
-        deve registrare la soglia come già notificata.
+        True se il messaggio è stato pubblicato per intero: solo in quel caso il
+        chiamante deve registrare la soglia come già notificata.
     """
     try:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=testo,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            **thread_kwargs(topic_id),
-        )
+        for parte in split_message(testo):
+            await bot.send_message(
+                chat_id=chat_id,
+                text=parte,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                **thread_kwargs(topic_id),
+            )
         return True
     except TelegramError as e:
         logger.error(f"Impossibile pubblicare l'alert disponibilità nel gruppo {chat_id}: {e}")

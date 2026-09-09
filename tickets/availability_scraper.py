@@ -1,5 +1,10 @@
 """
-Scraper della disponibilità dei biglietti in vendita sul sito ufficiale.
+Scraper della disponibilità dei prodotti in vendita sullo shop ufficiale.
+
+Lo stesso motore serve due pagine: i biglietti del festival e gli alloggi
+(hotel e campeggi). Sono sezioni diverse dello stesso shop — le schede stanno
+tutte sotto /en/tickets/detail/id/ e usano lo stesso template — quindi il
+parsing è identico e cambiano solo la pagina elenco e il filtro sui nomi.
 
 Ogni prodotto dello shop mostra una barra "Available" con la percentuale di
 biglietti ancora acquistabili:
@@ -37,7 +42,14 @@ PRODUCT_MATCH = os.getenv("TICKET_PRODUCT_MATCH", "2027")
 
 # Tetto ai fetch delle schede prodotto in un ciclo: se un giorno lo shop
 # pubblicasse decine di articoli, il polling ogni 5 minuti resta sostenibile.
+# È un parametro e non una costante globale perché la pagina alloggi ne elenca
+# già più di quanti bastino ai biglietti: con un tetto unico i prodotti oltre il
+# limite verrebbero scartati in silenzio.
 MAX_PRODUCT_FETCHES = 25
+
+# Schede prodotto scaricate insieme. Senza limite un gather su tutta la pagina
+# alloggi apre quasi trenta connessioni simultanee allo stesso sito.
+MAX_CONCURRENT_FETCHES = 8
 
 FETCH_TIMEOUT = 20.0
 
@@ -111,19 +123,19 @@ def _has_sold_out_badge(node) -> bool:
 
 def parse_product_links(html: str) -> Optional[list[dict]]:
     """
-    Estrae i prodotti dalla pagina elenco dei biglietti.
+    Estrae i prodotti da una pagina elenco dello shop (biglietti o alloggi).
 
     Returns:
         Lista di dict con chiavi: id, title, url, sold_out.
         None se la struttura della pagina non è riconoscibile: in quel caso il
-        chiamante NON deve dedurre che i biglietti tracciati siano esauriti.
+        chiamante NON deve dedurre che i prodotti tracciati siano esauriti.
     """
     soup = BeautifulSoup(html, "html.parser")
     anchors = soup.select("a.product_title")
 
     if not anchors:
         logger.warning(
-            "Nessun prodotto trovato nella pagina biglietti: struttura non riconosciuta, "
+            "Nessun prodotto trovato nella pagina elenco: struttura non riconosciuta, "
             "ciclo saltato per non annunciare sold out inesistenti."
         )
         return None
@@ -188,10 +200,15 @@ def parse_availability(html: str) -> tuple[Optional[float], bool, Optional[str]]
     return percent, sold_out, name
 
 
-async def _fetch_product(client: httpx.AsyncClient, product: dict) -> Optional[dict]:
+async def _fetch_product(
+    client: httpx.AsyncClient,
+    product: dict,
+    semaphore: asyncio.Semaphore,
+) -> Optional[dict]:
     """Scarica una scheda prodotto e ne estrae nome e disponibilità."""
     try:
-        response = await client.get(product["url"])
+        async with semaphore:
+            response = await client.get(product["url"])
         response.raise_for_status()
     except httpx.HTTPError as e:
         logger.warning(f"Scheda prodotto {product['id']} non raggiungibile: {e}")
@@ -223,56 +240,119 @@ async def _fetch_product(client: httpx.AsyncClient, product: dict) -> Optional[d
     }
 
 
-def _matches(text: Optional[str]) -> bool:
-    return bool(text) and PRODUCT_MATCH.lower() in text.lower()
-
-
-async def fetch_ticket_availability() -> Optional[list[dict]]:
+def _matches(text: Optional[str], match: str) -> bool:
     """
-    Recupera la disponibilità dei biglietti dell'edizione monitorata.
+    True se il nome del prodotto rientra nel filtro.
+
+    Un filtro vuoto non filtra niente: è il caso della pagina alloggi, dove
+    tutto quello che è elencato riguarda l'edizione in corso e non ci sono
+    voucher da escludere.
+    """
+    if not match:
+        return True
+    return bool(text) and match.lower() in text.lower()
+
+
+def select_candidates(
+    products: list[dict],
+    match: str,
+    max_fetches: int,
+    label: str = "prodotti",
+) -> list[dict]:
+    """
+    Prodotti della pagina elenco di cui vale la pena scaricare la scheda.
+
+    Il titolo nell'elenco può essere troncato: un prodotto con titolo tagliato
+    va verificato sulla scheda completa, altrimenti un "... 2027 ..." oltre il
+    troncamento sfuggirebbe al filtro.
+    """
+    candidates = [
+        p for p in products if _matches(p["title"], match) or p["title"].endswith("...")
+    ]
+
+    # Il taglio va segnalato: i prodotti oltre il tetto non vengono controllati,
+    # e senza una riga nei log il loro sold out mancante sembrerebbe un bug
+    # dello scraper. È il caso in cui è già incappata la pagina alloggi, che da
+    # sola elenca più prodotti del tetto pensato per i biglietti.
+    if len(candidates) > max_fetches:
+        logger.warning(
+            f"Pagina {label}: {len(candidates)} prodotti da controllare, "
+            f"tetto a {max_fetches}. I restanti non vengono monitorati: "
+            f"alza max_fetches."
+        )
+        candidates = candidates[:max_fetches]
+
+    return candidates
+
+
+async def fetch_shop_availability(
+    page_url: str,
+    match: str = "",
+    label: str = "prodotti",
+    max_fetches: int = MAX_PRODUCT_FETCHES,
+) -> Optional[list[dict]]:
+    """
+    Recupera la disponibilità dei prodotti elencati in una pagina dello shop.
+
+    Args:
+        page_url: pagina elenco da leggere (biglietti o alloggi).
+        match: testo che il nome deve contenere; stringa vuota per non filtrare.
+        label: come chiamare questi prodotti nei log.
+        max_fetches: tetto alle schede prodotto scaricate in un ciclo.
 
     Returns:
         Lista di dict con chiavi: id, name, url, percent, sold_out.
-        Lista vuota se nessun prodotto corrisponde (nessun biglietto in vendita).
-        None in caso di errore di rete o di pagina non riconoscibile.
+        Lista vuota se nessun prodotto corrisponde (niente in vendita).
+        None in caso di errore di rete o di pagina non riconoscibile — in quel
+        caso il chiamante NON deve dedurre nessun esaurimento.
     """
     try:
         async with httpx.AsyncClient(
             headers=HEADERS, timeout=FETCH_TIMEOUT, follow_redirects=True
         ) as client:
-            response = await client.get(TICKETS_URL)
+            response = await client.get(page_url)
             response.raise_for_status()
 
             try:
                 products = parse_product_links(response.text)
             except Exception as e:
-                logger.error(f"Errore durante il parsing della pagina biglietti: {e}")
+                logger.error(f"Errore durante il parsing della pagina {label}: {e}")
                 return None
 
             if products is None:
                 return None
 
-            # Il titolo nell'elenco è troncato: un prodotto con titolo tagliato va
-            # verificato sulla scheda completa, altrimenti un "... 2027 ..." oltre
-            # il troncamento sfuggirebbe al filtro.
-            candidates = [
-                p for p in products if _matches(p["title"]) or p["title"].endswith("...")
-            ][:MAX_PRODUCT_FETCHES]
+            candidates = select_candidates(products, match, max_fetches, label)
 
             if not candidates:
-                logger.info(f"Nessun prodotto '{PRODUCT_MATCH}' nella pagina biglietti.")
+                logger.info(
+                    f"Nessun prodotto{f' “{match}”' if match else ''} nella pagina {label}."
+                )
                 return []
 
-            results = await asyncio.gather(*(_fetch_product(client, p) for p in candidates))
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+            results = await asyncio.gather(
+                *(_fetch_product(client, p, semaphore) for p in candidates)
+            )
     except httpx.HTTPError as e:
-        logger.error(f"Errore HTTP sulla pagina biglietti: {e}")
+        logger.error(f"Errore HTTP sulla pagina {label}: {e}")
         return None
 
-    found = [r for r in results if r is not None and _matches(r["name"])]
+    found = [r for r in results if r is not None and _matches(r["name"], match)]
     logger.info(
-        f"Disponibilità biglietti '{PRODUCT_MATCH}': {len(found)} prodotti monitorati. "
+        f"Disponibilità {label}: {len(found)} prodotti monitorati. "
         + " | ".join(
             f"{r['name'][:40]}: {'SOLD OUT' if r['sold_out'] else r['percent']}" for r in found
         )
     )
     return found
+
+
+async def fetch_ticket_availability() -> Optional[list[dict]]:
+    """Disponibilità dei biglietti dell'edizione monitorata."""
+    return await fetch_shop_availability(
+        TICKETS_URL,
+        match=PRODUCT_MATCH,
+        label=f"biglietti “{PRODUCT_MATCH}”",
+        max_fetches=MAX_PRODUCT_FETCHES,
+    )

@@ -29,10 +29,17 @@ from tickets.availability_scraper import (
     levels_crossed,
 )
 from tickets.availability_state import (
+    AVAILABILITY_STATE_FILE,
     load_availability_state,
     make_record as make_availability_record,
     save_availability_state,
 )
+
+from accommodation.accommodation_scraper import (
+    PRODUCT_MATCH as ACCOMMODATION_MATCH,
+    fetch_accommodation_availability,
+)
+from accommodation.accommodation_state import ACCOMMODATION_STATE_FILE
 
 from news.news_scraper import fetch_news
 from news.news_state import load_failures, load_seen, save_failures, save_seen
@@ -50,6 +57,8 @@ from weather_forecast.weather_state import load_last_report_date, save_last_repo
 from weather_forecast.webcam import fetch_webcam_snapshot
 
 from notifier import (
+    ACCOMMODATION_LABELS,
+    TICKET_LABELS,
     format_availability_alert,
     format_availability_intro,
     format_availability_new,
@@ -62,6 +71,7 @@ from notifier import (
     send_availability_message,
     send_news,
     send_weather,
+    split_message,
 )
 
 logging.basicConfig(
@@ -163,31 +173,52 @@ async def check_exchange(app: Application, chat_id: str, topic_id: int = None) -
         )
 
 
-async def check_ticket_availability(app: Application, chat_id: str, topic_id: int = None) -> None:
+async def _check_availability(
+    app: Application,
+    chat_id: str,
+    topic_id: int | None,
+    *,
+    fetch,
+    state_file,
+    labels,
+    what: str,
+) -> None:
     """
-    Controlla quanti biglietti restano in vendita sul sito ufficiale e avvisa il
-    topic dei biglietti a ogni scaglione del 5% superato verso il basso, fino al
-    sold out.
+    Controlla quanto resta in vendita sul sito ufficiale e avvisa il gruppo a
+    ogni scaglione del 5% superato verso il basso, fino al sold out.
 
     Al primo avvio (nessuno stato salvato) pubblica un riepilogo con la
     percentuale attuale, anche se non è un multiplo di 5.
-    """
-    logger.info("Controllo disponibilità biglietti...")
 
-    products = await fetch_ticket_availability()
+    Lo stesso ciclo serve i biglietti e gli alloggi: cambiano la pagina da
+    leggere, il file di stato, il topic e le parole dei messaggi. Una seconda
+    copia di questa funzione divergerebbe alla prima correzione applicata a una
+    sola delle due — è esattamente così che il sold out dei biglietti è rimasto
+    per mesi non annunciato.
+
+    Args:
+        fetch: coroutine senza argomenti che restituisce i prodotti (None se il
+            sito non è leggibile).
+        state_file: file di stato di questa sezione.
+        labels: come chiamare i prodotti nei messaggi (notifier.AvailabilityLabels).
+        what: nome della sezione nei log.
+    """
+    logger.info(f"Controllo disponibilità {what}...")
+
+    products = await fetch()
     if products is None:
         logger.warning(
-            "Impossibile leggere la disponibilità dei biglietti. Riprovo al prossimo ciclo."
+            f"Impossibile leggere la disponibilità {what}. Riprovo al prossimo ciclo."
         )
         return
 
-    state = load_availability_state()
+    state = load_availability_state(state_file)
     known = state["products"]
 
     # Una barra illeggibile non è un esaurimento: quei prodotti vengono saltati
     # per questo ciclo, ma restano "visti" e non maturano un sold out.
     #
-    # Un biglietto esaurito invece non ha nessuna barra da leggere: va trattato
+    # Un prodotto esaurito invece non ha nessuna barra da leggere: va trattato
     # come disponibilità zero, altrimenti finirebbe tra quelli "illeggibili" e
     # verrebbe saltato a ogni ciclo senza che il sold out venga mai annunciato.
     seen_ids = {p["id"] for p in products}
@@ -207,14 +238,14 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
         # topic giusto. Lo stato viene salvato solo se il messaggio è partito,
         # altrimenti al prossimo ciclo si ritenta.
         if not await send_availability_message(
-            app.bot, chat_id, topic_id, format_availability_intro(readable)
+            app.bot, chat_id, topic_id, format_availability_intro(readable, labels)
         ):
             logger.warning("Riepilogo iniziale non pubblicato: ritento al prossimo ciclo.")
             return
         for p in readable:
             known[p["id"]] = make_availability_record(p, level_of(p["percent"]))
         state["initialized"] = True
-        if not save_availability_state(state):
+        if not save_availability_state(state, state_file):
             logger.error("Stato disponibilità non salvato: il riepilogo verrà ripubblicato.")
         return
 
@@ -227,11 +258,11 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
             if is_sold_out(p):
                 # Comparso già esaurito: non c'è nessuna vendita da annunciare, e
                 # nemmeno un sold out — il gruppo non ha mai saputo che questo
-                # biglietto esistesse, un "è finito" su qualcosa che non è mai
+                # prodotto esistesse, un "è finito" su qualcosa che non è mai
                 # stato in vendita sarebbe solo rumore.
                 #
                 # Non viene nemmeno messo sotto osservazione: così, se un giorno
-                # torna acquistabile, ricade qui come biglietto sconosciuto e
+                # torna acquistabile, ricade qui come prodotto sconosciuto e
                 # viene annunciato come nuovo. Tracciarlo adesso lo renderebbe
                 # invisibile per sempre.
                 logger.info(
@@ -240,10 +271,10 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
                 )
                 continue
 
-            # Biglietto comparso dopo l'avvio del monitoraggio (nuova tipologia
+            # Prodotto comparso dopo l'avvio del monitoraggio (nuova tipologia
             # messa in vendita): lo si annuncia e si parte a tracciarlo da qui.
             if await send_availability_message(
-                app.bot, chat_id, topic_id, format_availability_new(p)
+                app.bot, chat_id, topic_id, format_availability_new(p, labels)
             ):
                 known[p["id"]] = make_availability_record(p, level)
             continue
@@ -262,7 +293,7 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
             # Tornato acquistabile dopo un esaurimento (nuova tranche immessa in
             # vendita). Il flag va azzerato qui e non nel ramo della risalita:
             # se rientra sotto il 5% lo scaglione resta 0, quel ramo non scatta e
-            # il biglietto resterebbe marcato esaurito pur essendo in vendita —
+            # il prodotto resterebbe marcato esaurito pur essendo in vendita —
             # con l'esaurimento successivo mai più annunciato.
             logger.info(
                 f"'{record['name']}' di nuovo in vendita al {percent}% dopo il sold out."
@@ -271,7 +302,9 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
 
         if sold_out and not record.get("sold_out"):
             logger.info(f"'{record['name']}': SOLD OUT ({previous_percent}% → {percent}%).")
-            testo = format_availability_sold_out({**record, "percent": percent}, still_listed=True)
+            testo = format_availability_sold_out(
+                {**record, "percent": percent}, still_listed=True, labels=labels
+            )
             if await send_availability_message(app.bot, chat_id, topic_id, testo):
                 record["level"] = level
                 record["percent"] = percent
@@ -299,7 +332,7 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
             f"sotto il {soglia}% (soglie superate: {crossed})."
         )
 
-        testo = format_availability_alert(p, soglia, previous_percent, crossed)
+        testo = format_availability_alert(p, soglia, previous_percent, crossed, labels)
         if await send_availability_message(app.bot, chat_id, topic_id, testo):
             record["level"] = level
             record["percent"] = percent
@@ -307,14 +340,14 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
             # Scaglione non registrato: l'alert viene ritentato al prossimo ciclo.
             logger.warning(f"Alert {soglia}% per '{record['name']}' non inviato: ritento.")
 
-    # Biglietti spariti dalla pagina: come per il Ticket Exchange servono più
+    # Prodotti spariti dalla pagina: come per il Ticket Exchange servono più
     # cicli consecutivi di assenza prima di dichiararli esauriti.
     for product_id in list(known.keys() - seen_ids):
         record = known[product_id]
         record["missing_count"] = record.get("missing_count", 0) + 1
         if record["missing_count"] < MISSING_POLLS_BEFORE_SOLD:
             logger.info(
-                f"Biglietto '{record.get('name')}' non più in pagina "
+                f"'{record.get('name')}' non più in pagina "
                 f"({record['missing_count']}/{MISSING_POLLS_BEFORE_SOLD}): attendo conferma."
             )
             continue
@@ -325,15 +358,49 @@ async def check_ticket_availability(app: Application, chat_id: str, topic_id: in
             continue
 
         if await send_availability_message(
-            app.bot, chat_id, topic_id, format_availability_sold_out(record, still_listed=False)
+            app.bot,
+            chat_id,
+            topic_id,
+            format_availability_sold_out(record, still_listed=False, labels=labels),
         ):
             known.pop(product_id, None)
 
-    if not save_availability_state(state):
+    if not save_availability_state(state, state_file):
         logger.error(
             "Stato disponibilità non salvato: al prossimo ciclo le soglie già "
             "annunciate potrebbero essere ripubblicate."
         )
+
+
+# I due cicli sono wrapper e non chiamate dirette con dei partial: `fetch` viene
+# risolto come globale del modulo quando il wrapper gira, così i test possono
+# sostituire main.fetch_ticket_availability senza toccare il motore.
+async def check_ticket_availability(app: Application, chat_id: str, topic_id: int = None) -> None:
+    """Disponibilità dei biglietti sul sito ufficiale, nel topic dei biglietti."""
+    await _check_availability(
+        app,
+        chat_id,
+        topic_id,
+        fetch=fetch_ticket_availability,
+        state_file=AVAILABILITY_STATE_FILE,
+        labels=TICKET_LABELS,
+        what="biglietti",
+    )
+
+
+async def check_accommodation_availability(
+    app: Application, chat_id: str, topic_id: int = None
+) -> None:
+    """Disponibilità di hotel e campeggi sul sito ufficiale."""
+    await _check_availability(
+        app,
+        chat_id,
+        topic_id,
+        fetch=fetch_accommodation_availability,
+        state_file=ACCOMMODATION_STATE_FILE,
+        labels=ACCOMMODATION_LABELS,
+        what="alloggi",
+    )
 
 
 # Elenco unico dei comandi: alimenta sia il menù "/" di Telegram (via
@@ -345,6 +412,7 @@ BOT_COMMANDS = [
     BotCommand("status", "Stato del bot e annunci tracciati"),
     BotCommand("listings", "Annunci attuali sul Ticket Exchange"),
     BotCommand("availability", "Biglietti ancora in vendita sul sito ufficiale"),
+    BotCommand("accommodation", "Hotel e campeggi ancora disponibili"),
     BotCommand("news", "Ultime notizie di Brutal Assault"),
     BotCommand("weather", "Previsioni meteo per i giorni del festival"),
     BotCommand("version", "Versione del bot e novità dell'ultimo rilascio"),
@@ -396,11 +464,14 @@ async def cmd_status(update, context) -> None:
     if pendenti:
         righe.append(f"⚠️ Messaggi venduti in attesa di rimozione: {pendenti}")
 
-    for record in load_availability_state()["products"].values():
-        stato = "SOLD OUT" if record.get("sold_out") else format_percent(record.get("percent"))
-        righe.append(f"📊 {record.get('name')}: {stato}")
+    for state_file in (AVAILABILITY_STATE_FILE, ACCOMMODATION_STATE_FILE):
+        for record in load_availability_state(state_file)["products"].values():
+            stato = (
+                "SOLD OUT" if record.get("sold_out") else format_percent(record.get("percent"))
+            )
+            righe.append(f"📊 {record.get('name')}: {stato}")
 
-    await update.message.reply_text("\n".join(righe))
+    await reply_long(update.message, "\n".join(righe))
 
 
 async def cmd_listings(update, context) -> None:
@@ -438,11 +509,28 @@ async def cmd_listings(update, context) -> None:
     )
 
 
-async def cmd_availability(update, context) -> None:
-    """Disponibilità attuale dei biglietti sul sito ufficiale, letta al momento."""
-    await update.message.reply_text("🔍 Controllo la disponibilità dei biglietti...")
+async def reply_long(message, testo: str, **kwargs) -> None:
+    """
+    Risponde a un comando spezzando il testo se supera il limite di Telegram.
 
-    products = await fetch_ticket_availability()
+    La pagina alloggi elenca quasi trenta prodotti: il riepilogo completo passa
+    i 4096 caratteri e Telegram lo rifiuterebbe in blocco, lasciando il comando
+    senza risposta.
+    """
+    for parte in split_message(testo):
+        await message.reply_text(parte, **kwargs)
+
+
+async def _reply_availability(update, fetch, labels, attesa: str) -> None:
+    """
+    Risponde con la disponibilità letta dal sito in questo momento.
+
+    Corpo condiviso da /availability e /accommodation: cambiano solo la pagina
+    interrogata e le parole del messaggio.
+    """
+    await update.message.reply_text(attesa)
+
+    products = await fetch()
     if products is None:
         await update.message.reply_text(
             "❌ Impossibile leggere la disponibilità dal sito ufficiale. Riprova più tardi."
@@ -457,10 +545,31 @@ async def cmd_availability(update, context) -> None:
         )
         return
 
-    await update.message.reply_text(
-        format_availability_status(leggibili),
+    await reply_long(
+        update.message,
+        format_availability_status(leggibili, labels),
         parse_mode="HTML",
         disable_web_page_preview=True,
+    )
+
+
+async def cmd_availability(update, context) -> None:
+    """Disponibilità attuale dei biglietti sul sito ufficiale, letta al momento."""
+    await _reply_availability(
+        update,
+        fetch_ticket_availability,
+        TICKET_LABELS,
+        "🔍 Controllo la disponibilità dei biglietti...",
+    )
+
+
+async def cmd_accommodation(update, context) -> None:
+    """Disponibilità attuale di hotel e campeggi, letta al momento."""
+    await _reply_availability(
+        update,
+        fetch_accommodation_availability,
+        ACCOMMODATION_LABELS,
+        "🔍 Controllo la disponibilità di hotel e campeggi...",
     )
 
 
@@ -611,6 +720,7 @@ async def main() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("listings", cmd_listings))
     app.add_handler(CommandHandler("availability", cmd_availability))
+    app.add_handler(CommandHandler("accommodation", cmd_accommodation))
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("weather", cmd_weather))
     app.add_handler(CommandHandler("version", cmd_version))
@@ -662,6 +772,22 @@ async def main() -> None:
         replace_existing=True,
     )
 
+    # Alloggi: stessa cadenza dei biglietti, topic separato se configurato.
+    scheduler.add_job(
+        run_job,
+        trigger="interval",
+        minutes=AVAILABILITY_CHECK_MINUTES,
+        args=[
+            "accommodation_availability",
+            check_accommodation_availability,
+            app,
+            config["chat_id"],
+            config["accommodation_topic_id"],
+        ],
+        id="accommodation_availability",
+        replace_existing=True,
+    )
+
     # Il report meteo è schedulato a intervalli e non come cron alle 08:00:
     # weather_tick pubblica una sola volta al giorno e recupera l'invio se
     # l'orario previsto è stato mancato (riavvio del bot, deploy, errore di rete).
@@ -686,6 +812,13 @@ async def main() -> None:
         f"Disponibilità biglietti: prodotti con '{PRODUCT_MATCH}' nel nome, "
         f"controllo ogni {AVAILABILITY_CHECK_MINUTES} minuti, alert a ogni "
         f"{ALERT_STEP}% nel topic ticket ({config['topic_id'] or 'General'})."
+    )
+    logger.info(
+        f"Disponibilità alloggi: "
+        f"{f'prodotti con ' + repr(ACCOMMODATION_MATCH) + ' nel nome' if ACCOMMODATION_MATCH else 'tutti i prodotti in pagina'}, "
+        f"controllo ogni {AVAILABILITY_CHECK_MINUTES} minuti, alert a ogni "
+        f"{ALERT_STEP}% nel topic alloggi "
+        f"({config['accommodation_topic_id'] or 'General'})."
     )
     logger.info(
         f"Avvio bot Brutal Assault Italia v{__version__} "
@@ -715,6 +848,13 @@ async def main() -> None:
             app,
             config["chat_id"],
             config["topic_id"],
+        )
+        await run_job(
+            "accommodation_availability",
+            check_accommodation_availability,
+            app,
+            config["chat_id"],
+            config["accommodation_topic_id"],
         )
         await run_job("daily_weather", weather_tick, app, config["chat_id"], config["weather_topic_id"])
         await app.start()

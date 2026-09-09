@@ -20,7 +20,7 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   errore di lettura della pagina non provoca mai eliminazioni di massa
 - Persistenza dello stato su volume Fly.io (`/data`) con scrittura atomica, per evitare
   notifiche duplicate e messaggi "orfani" dopo un riavvio
-- Supporto per Telegram Forum (topic mode), con topic separati per ticket, news e meteo
+- Supporto per Telegram Forum (topic mode), con topic separati per ticket, news, meteo e alloggi
 - Previsioni meteo 7 giorni per Jaroměř tramite API Open-Meteo (gratuita, senza API key)
 - Report meteo automatico una volta al giorno dalle 08:00 (fuso Europe/Prague) nei 15 giorni
   prima del festival e durante lo stesso, con previsioni filtrate sui soli giorni del
@@ -51,6 +51,19 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
 - Una pagina non parsabile o una barra illeggibile non vengono mai interpretate come
   sold out, e un biglietto sparito dallo shop viene dichiarato esaurito solo dopo
   2 cicli consecutivi di assenza
+- Lo stesso monitoraggio sugli alloggi della pagina
+  [accommodation](https://brutalassault.cz/en/accommodation) — hotel, ready-to-camp e
+  piazzole dei vari campi: riepilogo iniziale, alert a ogni multiplo di 5% verso il basso
+  e annuncio del sold out, con un topic dedicato se configurato
+- Gli alloggi sono una sezione dello stesso shop dei biglietti (schede sotto
+  `/en/tickets/detail/id/`, stesso template): il parsing non è duplicato, lo stesso
+  motore riceve un'altra pagina e un altro filtro. Cambiano solo le parole dei messaggi
+- A differenza dei biglietti gli alloggi non vengono filtrati per anno: in pagina ci sono
+  prodotti con l'anno sbagliato nel nome (`BA 2026`) che sono davvero in vendita, e un
+  filtro li renderebbe invisibili senza lasciare traccia nei log
+- Il riepilogo degli alloggi supera il limite di 4096 caratteri di Telegram (la pagina ne
+  elenca quasi trenta): viene pubblicato come più messaggi consecutivi, spezzato tra un
+  prodotto e l'altro per non tagliare i tag HTML a metà
 - Snapshot dalla webcam live di Josefov allegata ai messaggi meteo, con fallback a solo
   testo se l'immagine non è pubblicabile
 - Versione del bot tracciata e avanzata a ogni rilascio, con changelog consultabile dal
@@ -64,6 +77,7 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
 | `/status` | Stato del bot e annunci tracciati |
 | `/listings` | Annunci attualmente disponibili |
 | `/availability` | Percentuale di biglietti ancora in vendita sul sito ufficiale |
+| `/accommodation` | Percentuale di hotel e campeggi ancora disponibili |
 | `/news` | Ultime notizie di Brutal Assault |
 | `/weather` | Previsioni meteo 7 giorni per Jaroměř con countdown al festival |
 | `/version` | Versione in esecuzione, data del rilascio e novità che ha portato |
@@ -100,6 +114,7 @@ TELEGRAM_CHAT_ID=id_del_gruppo
 TELEGRAM_TOPIC_ID=id_del_topic_ticket
 TELEGRAM_NEWS_TOPIC_ID=id_del_topic_news
 TELEGRAM_WEATHER_TOPIC_ID=id_del_topic_meteo
+TELEGRAM_ACCOMMODATION_TOPIC_ID=id_del_topic_alloggi
 ```
 
 Variabili opzionali:
@@ -109,17 +124,22 @@ Variabili opzionali:
 | `FESTIVAL_START` | `2026-08-05` | Primo giorno del festival (`YYYY-MM-DD`) |
 | `FESTIVAL_END` | `2026-08-08` | Ultimo giorno del festival (`YYYY-MM-DD`) |
 | `BOT_DATA_DIR` | `/data` | Directory dei file di stato (volume Fly.io) |
-| `TICKET_PRODUCT_MATCH` | `2027` | Testo che il nome di un prodotto deve contenere per essere monitorato |
+| `TICKET_PRODUCT_MATCH` | `2027` | Testo che il nome di un biglietto deve contenere per essere monitorato |
+| `ACCOMMODATION_PRODUCT_MATCH` | *(vuoto)* | Come sopra per gli alloggi. Vuoto = nessun filtro, si monitora tutto quello che la pagina elenca |
 
 > **Nota sui topic id nei forum Telegram:** il topic "General" non ha un thread id valido. Se vuoi pubblicare nel General, lascia il topic id vuoto o impostalo a `1` — il bot omettera automaticamente il `message_thread_id`. Per topic reali, apri un messaggio del topic, clicca "Copia link" e il numero dopo `/c/<chat_id>/` e il thread id da usare.
 >
 > Se `TELEGRAM_WEATHER_TOPIC_ID` non e impostato, il report meteo viene pubblicato nello stesso topic delle news.
+>
+> Se `TELEGRAM_ACCOMMODATION_TOPIC_ID` non è impostato, gli alert sugli alloggi vengono pubblicati nello stesso topic dei biglietti.
 
 > **Permessi del bot:** per eliminare i messaggi dei biglietti venduti il bot deve essere amministratore del gruppo con il permesso "Delete messages". Senza quel permesso Telegram rifiuta l'eliminazione dei messaggi piu vecchi di 48 ore e il bot si limita a riscriverli come "VENDUTO".
 
 > **Topic chiuso (`Topic_closed`):** in un forum Telegram un topic chiuso accetta messaggi solo dagli amministratori con il permesso "Gestire i topic". Se il topic di destinazione e chiuso, Telegram rifiuta l'invio con `Topic_closed` e nel gruppo non compare nulla: riapri il topic (topic → menu → Riapri argomento) oppure concedi quel permesso al bot. Il bot ritenta da solo al ciclo successivo, senza bisogno di riavvio o deploy.
 
 > **Fine edizione (biglietti):** gli alert sulla disponibilita seguono `TICKET_PRODUCT_MATCH`, che filtra i prodotti dello shop per nome (default `2027`). Senza filtro finirebbero sotto osservazione anche i gift voucher, la cui percentuale e impostata a mano. Quando parte la vendita dell'edizione successiva, aggiorna quella variabile (o il default in `tickets/availability_scraper.py`): altrimenti il bot continua a seguire biglietti non piu in vendita e li dichiara sold out.
+
+> **Filtro degli alloggi:** `ACCOMMODATION_PRODUCT_MATCH` è vuoto di proposito, e normalmente va lasciato così. Nella pagina alloggi non ci sono gift voucher da escludere, e i nomi non sono affidabili come quelli dei biglietti: al momento della scrittura due prodotti si chiamano `BA 2026` invece di `BA 2027` e uno dei due è una piazzola in vendita al 98% — con un filtro per anno non sarebbe mai stata monitorata. Un alloggio rimasto da un'edizione passata è comunque esaurito, e un prodotto che compare già esaurito non viene né annunciato né tracciato: resta fuori dal gruppo da solo. Imposta la variabile solo se una prossima edizione mettesse in vendita alloggi di due anni diversi contemporaneamente.
 
 > **Fine edizione:** al termine del festival aggiorna `FESTIVAL_START` / `FESTIVAL_END` (o i valori di default in `weather_forecast/weather.py`), altrimenti il report meteo automatico resta silente. All'avvio il bot logga le date in uso e se la finestra del meteo e attiva oggi: e il primo posto dove guardare se il report non arriva.
 
@@ -197,13 +217,16 @@ BrutalTelegram/
 ├── CHANGELOG.md                   # Novità di ogni versione rilasciata
 ├── config.py                      # Caricamento configurazione da .env
 ├── storage.py                     # Directory dati persistente (volume Fly.io /data)
-├── notifier.py                    # Formattazione e invio messaggi Telegram (ticket + news + meteo)
+├── notifier.py                    # Formattazione e invio messaggi Telegram (ticket + alloggi + news + meteo)
 ├── translator.py                  # Traduzione testi in italiano (Google Translate)
 ├── tickets/
 │   ├── ticket_scraper.py          # Fetch e parsing della pagina xchange
 │   ├── ticket_state.py            # Persistenza stato ticket (seen_tickets.json)
-│   ├── availability_scraper.py    # Percentuale di biglietti ancora in vendita + soglie
+│   ├── availability_scraper.py    # Motore disponibilita (biglietti e alloggi) + soglie
 │   └── availability_state.py      # Soglie gia notificate (ticket_availability.json)
+├── accommodation/
+│   ├── accommodation_scraper.py   # Pagina e filtro degli alloggi (usa il motore dei ticket)
+│   └── accommodation_state.py     # Soglie gia notificate (accommodation_availability.json)
 ├── news/
 │   ├── news_scraper.py            # Fetch e parsing delle news + articoli
 │   └── news_state.py              # Persistenza stato news (seen_news.json)

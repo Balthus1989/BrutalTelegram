@@ -968,6 +968,314 @@ msg_v_start = FakeMessage()
 asyncio.run(main.cmd_start(SimpleNamespace(message=msg_v_start), None))
 check("/start riporta la versione", f"v{version.__version__}" in msg_v_start.replies[0]["text"])
 
+
+# ------------------------------------------- disponibilità alloggi (hotel e camp)
+from accommodation import accommodation_scraper, accommodation_state
+
+# Markup ripreso dalla pagina alloggi reale: gli alloggi sono una sezione dello
+# stesso shop dei biglietti (schede sotto /en/tickets/detail/id/) e usano lo
+# stesso template, badge "sold out" compreso. Se il sito cambiasse struttura
+# questi test cadono qui, non in esercizio.
+ELENCO_ALLOGGI = """
+<div class="ticket-1126 product item ticket ticket_item product-item">
+  <div class="product_image-wrap">
+    <a class="product-grid-image" href="https://brutalassault.cz/en/tickets/detail/id/1126"></a>
+  </div>
+  <div class="product_title-wrap">
+    <a class="product_title" href="https://brutalassault.cz/en/tickets/detail/id/1126">BA 2027 camp AAMON - spot for your small tent and 1 person [e-ticket]</a>
+  </div>
+</div>
+<div class="ticket-1140 product item ticket ticket_item product-item">
+  <div class="product_image-wrap">
+    <a class="product-grid-image" href="https://brutalassault.cz/en/tickets/detail/id/1140"></a>
+  </div>
+  <div class="product_title-wrap">
+    <a class="product_title" href="https://brutalassault.cz/en/tickets/detail/id/1140">BA 2026 silent camp CERBERUS - spot for your large tent and 3 persons [e-ticket]</a>
+  </div>
+</div>
+<div class="ticket-1144 product item ticket ticket_item product-item">
+  <div class="product_image-wrap">
+    <span class="sold_out">sold out</span>
+    <a class="product-grid-image" href="https://brutalassault.cz/en/tickets/detail/id/1144"></a>
+  </div>
+  <div class="product_title-wrap">
+    <a class="product_title" href="https://brutalassault.cz/en/tickets/detail/id/1144">BA 2027 Hotel &#268;ERNIGOV *** single room (1 bed) [e-ticket]</a>
+  </div>
+</div>
+"""
+
+SCHEDA_ALLOGGIO = """
+<h1 itemprop="name" class="product_title page_title">BA 2027 camp AAMON - spot for your small tent and 1 person [e-ticket]</h1>
+<div class="product_availability"><span>Available</span>:
+  <div class="graph" id="progress"><div class="green" id="bar" style="width:87.413793103448%"><p>87%</p></div></div>
+</div>
+"""
+
+SCHEDA_HOTEL_ESAURITO = """
+<h1 itemprop="name" class="product_title page_title">BA 2027 Hotel &#268;ERNIGOV *** single room (1 bed) [e-ticket]</h1>
+<div class="product_availability"><span>Available</span>:
+  <strong style="color:#d50628">Sold out</strong> </div>
+"""
+
+
+print("\n=== 43. Alloggi: markup reale della pagina letto senza codice dedicato ===")
+alloggi = availability_scraper.parse_product_links(ELENCO_ALLOGGI)
+check("i tre alloggi trovati", alloggi is not None and len(alloggi) == 3)
+per_id = {a["id"]: a for a in alloggi}
+check("id letti dalle schede dello shop", set(per_id) == {"1126", "1140", "1144"})
+check("hotel esaurito riconosciuto dal badge dell'elenco", per_id["1144"]["sold_out"])
+check("piazzola in vendita non marcata esaurita", not per_id["1126"]["sold_out"])
+# Gli href della pagina alloggi sono assoluti, quelli dei biglietti relativi:
+# il link deve restare valido in entrambi i casi.
+check("url assoluto non raddoppiato",
+      per_id["1126"]["url"] == "https://brutalassault.cz/en/tickets/detail/id/1126")
+
+percent, sold_out, nome = availability_scraper.parse_availability(SCHEDA_ALLOGGIO)
+check("percentuale precisa dalla barra dell'alloggio", round(percent, 2) == 87.41)
+check("alloggio in vendita non è sold out", not sold_out)
+check("nome dell'alloggio dalla scheda", nome.startswith("BA 2027 camp AAMON"))
+
+percent, sold_out, nome = availability_scraper.parse_availability(SCHEDA_HOTEL_ESAURITO)
+check("hotel esaurito: disponibilità zero, non illeggibile", percent == 0.0 and sold_out)
+
+
+print("\n=== 43b. Alloggi: nessun filtro per anno, altrimenti si perdono prodotti in vendita ===")
+# In pagina ci sono alloggi con l'anno sbagliato nel nome ("BA 2026" invece di
+# "BA 2027") che sono davvero in vendita: il filtro per anno dei biglietti li
+# renderebbe invisibili senza lasciare traccia.
+check("nessun filtro per gli alloggi", accommodation_scraper.PRODUCT_MATCH == "")
+tutti = availability_scraper.select_candidates(alloggi, "", 40)
+check("senza filtro passano tutti gli alloggi", len(tutti) == 3)
+solo_2027 = availability_scraper.select_candidates(alloggi, "2027", 40)
+check("con un filtro per anno la piazzola 'BA 2026' si perderebbe",
+      len(solo_2027) == 2 and "1140" not in {c["id"] for c in solo_2027})
+# I biglietti invece il filtro lo vogliono: esclude i gift voucher.
+check("i biglietti restano filtrati", availability_scraper.PRODUCT_MATCH != "")
+
+
+print("\n=== 43c. Alloggi: il tetto ai fetch copre tutta la pagina ===")
+# La pagina alloggi elenca da sola più prodotti del tetto pensato per i
+# biglietti: con quel tetto gli ultimi non sarebbero mai stati controllati.
+check("tetto alloggi più alto di quello dei biglietti",
+      accommodation_scraper.MAX_PRODUCT_FETCHES > availability_scraper.MAX_PRODUCT_FETCHES)
+check("tetto alloggi sopra i prodotti oggi in pagina (28)",
+      accommodation_scraper.MAX_PRODUCT_FETCHES >= 28)
+molti = [{"id": str(i), "title": f"alloggio {i}", "url": "u", "sold_out": False}
+         for i in range(30)]
+tagliati = availability_scraper.select_candidates(molti, "", 10)
+check("oltre il tetto i prodotti vengono tagliati", len(tagliati) == 10)
+
+
+print("\n=== 44. Alloggi: ciclo completo, dal riepilogo al sold out ===")
+
+
+def alloggio(percent, pid="1126", name="BA 2027 camp AAMON - spot for your small tent and 1 person",
+             sold_out=False):
+    return {
+        "id": pid,
+        "name": name,
+        "url": f"https://brutalassault.cz/en/tickets/detail/id/{pid}",
+        "percent": percent,
+        "sold_out": sold_out,
+    }
+
+
+def reset_acc():
+    accommodation_state.ACCOMMODATION_STATE_FILE.unlink(missing_ok=True)
+
+
+async def run_acc(bot, prodotti, topic=789):
+    """Esegue check_accommodation_availability con la pagina alloggi simulata."""
+    async def fake_fetch():
+        return prodotti
+    main.fetch_accommodation_availability = fake_fetch
+    await main.check_accommodation_availability(fake_app(bot), CHAT, topic)
+
+
+reset_acc()
+bot_acc = FakeBot()
+asyncio.run(run_acc(bot_acc, [alloggio(87.41)]))
+stato_acc = accommodation_state.load_accommodation_state()
+check("riepilogo iniziale degli alloggi pubblicato", len(bot_acc.sent) == 1)
+check("parla di alloggi, non di biglietti",
+      "Monitoraggio alloggi attivo" in bot_acc.sent[0]["text"])
+check("percentuale attuale nel riepilogo", "87,4%" in bot_acc.sent[0]["text"])
+check("link con il testo degli alloggi", "Vai all'alloggio" in bot_acc.sent[0]["text"])
+check("topic degli alloggi", bot_acc.sent[0].get("message_thread_id") == 789)
+check("stato alloggi inizializzato a 85",
+      stato_acc["initialized"] and stato_acc["products"]["1126"]["level"] == 85)
+
+bot_acc.sent.clear()
+asyncio.run(run_acc(bot_acc, [alloggio(86.0)]))
+check("dentro lo stesso scaglione nessun avviso", bot_acc.sent == [])
+
+asyncio.run(run_acc(bot_acc, [alloggio(83.0)]))
+check("un avviso alla discesa di scaglione", len(bot_acc.sent) == 1)
+check("annuncia la soglia superata", "sotto il 85%" in bot_acc.sent[0]["text"])
+check("l'avviso parla di posti", "Posti sotto il" in bot_acc.sent[0]["text"])
+
+bot_acc.sent.clear()
+asyncio.run(run_acc(bot_acc, [alloggio(0.0, sold_out=True)]))
+check("sold out dell'alloggio annunciato",
+      len(bot_acc.sent) == 1 and "SOLD OUT" in bot_acc.sent[0]["text"])
+check("i posti esauriti, non i biglietti", "I posti sono esauriti" in bot_acc.sent[0]["text"])
+# Per gli alloggi non esiste un mercato di rivendita: rimandare al Ticket
+# Exchange sarebbe un consiglio inutile.
+check("nessun rimando al Ticket Exchange", "xchange" not in bot_acc.sent[0]["text"])
+check("rimanda alla pagina alloggi", "accommodation" in bot_acc.sent[0]["text"])
+
+bot_acc.sent.clear()
+asyncio.run(run_acc(bot_acc, [alloggio(0.0, sold_out=True)]))
+check("nessun doppione di sold out", bot_acc.sent == [])
+
+
+print("\n=== 44b. Alloggi e biglietti: stati separati, nessuna interferenza ===")
+reset_avail()
+reset_acc()
+bot_mix = FakeBot()
+asyncio.run(run_avail(bot_mix, [prodotto(40.0)]))          # riepilogo biglietti
+asyncio.run(run_acc(bot_mix, [alloggio(90.0)]))            # riepilogo alloggi
+check("due file di stato distinti",
+      availability_state.AVAILABILITY_STATE_FILE != accommodation_state.ACCOMMODATION_STATE_FILE)
+check("lo stato biglietti contiene solo il biglietto",
+      set(availability_state.load_availability_state()["products"]) == {"1104"})
+check("lo stato alloggi contiene solo l'alloggio",
+      set(accommodation_state.load_accommodation_state()["products"]) == {"1126"})
+
+# Un ciclo alloggi non deve far ripubblicare il riepilogo dei biglietti né
+# perdere le soglie già annunciate: è il rischio di due monitoraggi sullo
+# stesso file di stato.
+bot_mix.sent.clear()
+asyncio.run(run_acc(bot_mix, [alloggio(90.5)]))            # stesso scaglione: muto
+check("il ciclo alloggi non tocca i biglietti", bot_mix.sent == [])
+bot_mix.sent.clear()
+asyncio.run(run_avail(bot_mix, [prodotto(38.0)]))          # 40% -> sotto il 40%
+check("le soglie dei biglietti restano al loro posto",
+      len(bot_mix.sent) == 1 and "sotto il 40%" in bot_mix.sent[0]["text"])
+check("l'avviso biglietti parla di biglietti", "Biglietti sotto il" in bot_mix.sent[0]["text"])
+
+
+print("\n=== 44c. Alloggio comparso già esaurito -> nessun annuncio, ma annunciato se torna ===")
+# Vale come per i biglietti: un hotel già esaurito quando il monitoraggio parte
+# non va annunciato (il gruppo non ha mai saputo che esistesse) né tracciato,
+# altrimenti resterebbe invisibile per sempre.
+reset_acc()
+bot_gia = FakeBot()
+asyncio.run(run_acc(bot_gia, [alloggio(90.0)]))            # riepilogo iniziale
+bot_gia.sent.clear()
+HOTEL = "BA 2027 Hotel ČERNIGOV *** single room (1 bed)"
+asyncio.run(run_acc(bot_gia, [alloggio(90.0), alloggio(0.0, pid="1144", name=HOTEL, sold_out=True)]))
+check("hotel già esaurito non annunciato", bot_gia.sent == [])
+check("hotel già esaurito non tracciato",
+      "1144" not in accommodation_state.load_accommodation_state()["products"])
+asyncio.run(run_acc(bot_gia, [alloggio(90.0), alloggio(55.0, pid="1144", name=HOTEL)]))
+check("se torna in vendita viene annunciato come nuovo",
+      len(bot_gia.sent) == 1 and "Nuovo alloggio in vendita" in bot_gia.sent[0]["text"])
+check("e da lì viene tracciato",
+      accommodation_state.load_accommodation_state()["products"]["1144"]["level"] == 55)
+
+
+print("\n=== 44d. Alloggi: pagina illeggibile -> nessun messaggio, stato intatto ===")
+reset_acc()
+bot_ko = FakeBot()
+asyncio.run(run_acc(bot_ko, [alloggio(90.0)]))
+bot_ko.sent.clear()
+asyncio.run(run_acc(bot_ko, None))
+check("sito non leggibile: nessun sold out inventato", bot_ko.sent == [])
+check("stato alloggi non svuotato",
+      set(accommodation_state.load_accommodation_state()["products"]) == {"1126"})
+
+
+print("\n=== 45. Comando /accommodation -> disponibilità di hotel e campeggi ===")
+
+
+def run_cmd_acc(prodotti):
+    async def fake_fetch():
+        return prodotti
+    main.fetch_accommodation_availability = fake_fetch
+    msg = FakeMessage()
+    asyncio.run(main.cmd_accommodation(SimpleNamespace(message=msg), None))
+    return msg.replies
+
+
+risposte = run_cmd_acc([alloggio(87.41)])
+check("risposta inviata dopo l'attesa", len(risposte) == 2)
+check("titolo su hotel e campeggi", "Hotel e campeggi" in risposte[1]["text"])
+check("percentuale dell'alloggio", "87,4%" in risposte[1]["text"])
+check("annuncia la prossima soglia", "Prossimo avviso: sotto il 85%" in risposte[1]["text"])
+check("inviato in HTML", risposte[1].get("parse_mode") == "HTML")
+
+risposte = run_cmd_acc([alloggio(0.0, sold_out=True)])
+check("alloggio esaurito segnalato", "SOLD OUT" in risposte[1]["text"])
+check("nessun 'Disponibili: 0,0%' per un esaurito", "0,0%" not in risposte[1]["text"])
+
+risposte = run_cmd_acc([])
+check("nessun alloggio in vendita", "nessun alloggio" in risposte[1]["text"])
+
+risposte = run_cmd_acc(None)
+check("errore di lettura segnalato", "❌" in risposte[1]["text"])
+
+
+
+print("\n=== 46. Messaggi oltre il limite di Telegram -> spezzati, non perduti ===")
+
+
+class LimitBot(FakeBot):
+    """Bot che rifiuta i messaggi troppo lunghi, come fa Telegram."""
+    async def send_message(self, chat_id, text, **kw):
+        if len(text) > notifier.MAX_MESSAGE_LENGTH:
+            raise BadRequest("Message is too long")
+        return await super().send_message(chat_id, text, **kw)
+
+
+check("testo corto lasciato intero", notifier.split_message("ciao") == ["ciao"])
+
+lungo = "\n\n".join(f"<b>BLOCCO {i}</b>\nriga " + "x" * 300 for i in range(30))
+parti = notifier.split_message(lungo)
+check("testo lungo spezzato in più parti", len(parti) > 1)
+check("ogni parte sotto il limite",
+      all(len(p) <= notifier.MAX_MESSAGE_LENGTH for p in parti))
+check("ricomposizione identica all'originale", "\n\n".join(parti) == lungo)
+# Tagliare a lunghezza fissa spezzerebbe un tag a metà e Telegram rifiuterebbe
+# il pezzo: il taglio deve cadere tra un blocco e l'altro.
+check("nessun tag HTML spezzato a metà",
+      all(p.count("<b>") == p.count("</b>") for p in parti))
+
+# La pagina alloggi reale elenca 28 prodotti: il riepilogo completo supera i
+# 4096 caratteri. Telegram non tronca, rifiuta — e un riepilogo rifiutato non
+# salva lo stato, quindi il monitoraggio non sarebbe mai partito e il bot
+# avrebbe ritentato in silenzio a ogni ciclo, per sempre.
+reset_acc()
+bot_lim = LimitBot()
+molti_alloggi = [
+    alloggio(90.0 + (i % 10) / 10, pid=str(1200 + i),
+             name=f"BA 2027 camp AAMON - spot for your large tent and {i} persons [e-ticket]")
+    for i in range(28)
+]
+riepilogo = notifier.format_availability_intro(molti_alloggi, notifier.ACCOMMODATION_LABELS)
+check("il riepilogo di 28 alloggi supera davvero il limite",
+      len(riepilogo) > notifier.MAX_MESSAGE_LENGTH)
+
+asyncio.run(run_acc(bot_lim, molti_alloggi))
+check("riepilogo pubblicato in più messaggi", len(bot_lim.sent) > 1)
+check("nessun messaggio rifiutato",
+      all(len(m["text"]) <= notifier.MAX_MESSAGE_LENGTH for m in bot_lim.sent))
+stato_lim = accommodation_state.load_accommodation_state()
+check("monitoraggio inizializzato", stato_lim["initialized"])
+check("tutti i 28 alloggi tracciati", len(stato_lim["products"]) == 28)
+
+# Secondo ciclo: se il riepilogo fosse fallito, verrebbe ripubblicato.
+bot_lim.sent.clear()
+asyncio.run(run_acc(bot_lim, molti_alloggi))
+check("riepilogo non ripubblicato al ciclo dopo", bot_lim.sent == [])
+
+# Anche la risposta al comando va spezzata: con 28 alloggi passa il limite.
+risposte = run_cmd_acc(molti_alloggi)
+check("/accommodation risponde in più messaggi", len(risposte) > 2)
+check("ogni risposta sotto il limite",
+      all(len(r["text"]) <= notifier.MAX_MESSAGE_LENGTH for r in risposte))
+
+
 print(f"\n===== {len(ok)} PASS, {len(fail)} FAIL =====")
 for f in fail:
     print("  FAILED:", f)

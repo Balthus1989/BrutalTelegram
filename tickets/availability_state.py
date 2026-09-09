@@ -1,9 +1,13 @@
 """
-Stato della disponibilità dei biglietti in vendita.
+Stato della disponibilità dei prodotti in vendita sullo shop ufficiale.
 
 Tiene traccia dell'ultima soglia (multiplo di 5%) notificata per ogni prodotto,
 così un riavvio del bot non fa ri-annunciare soglie già comunicate al gruppo né
 perde quelle attraversate nel frattempo.
+
+Le funzioni prendono il file su cui lavorare, così biglietti e alloggi tengono
+stati separati con lo stesso codice: due copie divergenti di questa logica sono
+già state la causa di un sold out mai annunciato.
 
 Struttura del file JSON:
 {
@@ -60,9 +64,9 @@ def make_record(product: dict, level: int) -> dict:
     }
 
 
-def load_availability_state() -> dict:
+def load_availability_state(path: Path = AVAILABILITY_STATE_FILE) -> dict:
     """
-    Carica lo stato dal file.
+    Carica lo stato dal file indicato.
 
     Returns:
         Dict con chiavi 'initialized' (bool) e 'products' ({ product_id -> record }).
@@ -71,20 +75,18 @@ def load_availability_state() -> dict:
     """
     empty = {"initialized": False, "products": {}}
 
-    if not AVAILABILITY_STATE_FILE.exists():
+    if not path.exists():
         logger.info(
-            f"Nessuno stato disponibilità in {AVAILABILITY_STATE_FILE} — "
+            f"Nessuno stato disponibilità in {path} — "
             f"pubblico il riepilogo iniziale al primo controllo."
         )
         return empty
 
     try:
-        with open(AVAILABILITY_STATE_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        logger.warning(
-            f"Impossibile leggere {AVAILABILITY_STATE_FILE}: {e}. Ricomincio da capo."
-        )
+        logger.warning(f"Impossibile leggere {path}: {e}. Ricomincio da capo.")
         return empty
 
     products: dict[str, dict] = {}
@@ -100,7 +102,7 @@ def load_availability_state() -> dict:
     return {"initialized": bool(data.get("initialized")), "products": products}
 
 
-def save_availability_state(state: dict) -> bool:
+def save_availability_state(state: dict, path: Path = AVAILABILITY_STATE_FILE) -> bool:
     """
     Salva lo stato in modo atomico (file temporaneo + rename), così un riavvio a
     metà scrittura non lascia un JSON corrotto sul volume.
@@ -110,10 +112,10 @@ def save_availability_state(state: dict) -> bool:
     """
     payload = json.dumps(state, indent=2, ensure_ascii=False)
     try:
-        AVAILABILITY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
-            dir=str(AVAILABILITY_STATE_FILE.parent),
-            prefix=".ticket_availability.",
+            dir=str(path.parent),
+            prefix=f".{path.stem}.",
             suffix=".tmp",
         )
         try:
@@ -121,15 +123,14 @@ def save_availability_state(state: dict) -> bool:
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, AVAILABILITY_STATE_FILE)
+            os.replace(tmp_path, path)
         except BaseException:
             Path(tmp_path).unlink(missing_ok=True)
             raise
         logger.debug(
-            f"Stato disponibilità salvato ({len(state.get('products', {}))} prodotti) "
-            f"in {AVAILABILITY_STATE_FILE}."
+            f"Stato disponibilità salvato ({len(state.get('products', {}))} prodotti) in {path}."
         )
         return True
     except OSError as e:
-        logger.error(f"Impossibile salvare {AVAILABILITY_STATE_FILE}: {e}")
+        logger.error(f"Impossibile salvare {path}: {e}")
         return False

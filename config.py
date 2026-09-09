@@ -33,6 +33,7 @@ def load_config() -> dict:
     topic_id = os.getenv("TELEGRAM_TOPIC_ID")
     news_topic_id = os.getenv("TELEGRAM_NEWS_TOPIC_ID")
     weather_topic_id = os.getenv("TELEGRAM_WEATHER_TOPIC_ID")
+    accommodation_topic_id = os.getenv("TELEGRAM_ACCOMMODATION_TOPIC_ID")
 
     missing = []
     if not token:
@@ -49,6 +50,7 @@ def load_config() -> dict:
             f"  TELEGRAM_TOPIC_ID=id_del_topic\n"
             f"  TELEGRAM_NEWS_TOPIC_ID=id_del_topic_news"
             f"  TELEGRAM_WEATHER_TOPIC_ID=id_del_topic_weather"
+            f"  TELEGRAM_ACCOMMODATION_TOPIC_ID=id_del_topic_alloggi"
         )
 
     config = {
@@ -63,12 +65,20 @@ def load_config() -> dict:
             else int(news_topic_id) if news_topic_id
             else None
         ),
+        # Gli alloggi hanno senso accanto ai biglietti: chi guarda i posti
+        # rimasti guarda anche gli hotel. Con un topic dedicato ci vanno lì.
+        "accommodation_topic_id": (
+            int(accommodation_topic_id) if accommodation_topic_id
+            else int(topic_id) if topic_id
+            else None
+        ),
     }
 
     logger.info(
         f"Configurazione caricata. Chat ID: {chat_id} — "
         f"topic ticket: {config['topic_id'] or 'General'}, "
         f"topic news: {config['news_topic_id'] or 'General'}, "
-        f"topic meteo: {config['weather_topic_id'] or 'General'}"
+        f"topic meteo: {config['weather_topic_id'] or 'General'}, "
+        f"topic alloggi: {config['accommodation_topic_id'] or 'General'}"
     )
     return config

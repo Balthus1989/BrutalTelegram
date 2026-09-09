@@ -17,6 +17,44 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+### Aggiunto
+
+- Monitoraggio della disponibilità di hotel e campeggi della pagina
+  accommodation, con le stesse regole dei biglietti: riepilogo iniziale con la
+  percentuale attuale, un alert a ogni multiplo del 5% superato verso il basso
+  e l'annuncio del sold out. Comando `/accommodation` per interrogarla a
+  richiesta, e gli alloggi tracciati compaiono anche in `/status`
+- `TELEGRAM_ACCOMMODATION_TOPIC_ID` per pubblicare gli alert sugli alloggi in
+  un topic dedicato; se non è impostata seguono il topic dei biglietti
+- `ACCOMMODATION_PRODUCT_MATCH` per filtrare gli alloggi per nome. Vuota di
+  default: nella pagina alloggi non ci sono voucher da escludere e due prodotti
+  hanno l'anno sbagliato nel nome (`BA 2026`), uno dei quali è una piazzola in
+  vendita al 98% — un filtro per anno l'avrebbe resa invisibile
+
+### Modificato
+
+- Lo scraper della disponibilità, il file di stato e il ciclo di controllo sono
+  ora parametrici e servono sia i biglietti sia gli alloggi: gli alloggi sono
+  una sezione dello stesso shop e usano lo stesso template, quindi il parsing
+  non è stato duplicato. Una seconda copia sarebbe divergiuta alla prima
+  correzione applicata a una sola delle due, che è esattamente come il sold out
+  dei biglietti è rimasto per mesi non annunciato
+- Il tetto alle schede prodotto scaricate in un ciclo è diventato un parametro:
+  la pagina alloggi ne elenca 28, più del tetto di 25 pensato per i biglietti,
+  e i prodotti oltre il limite venivano scartati senza una riga nei log
+- Le schede prodotto non vengono più scaricate tutte insieme: al massimo 8 per
+  volta, per non aprire quasi trenta connessioni simultanee al sito
+
+### Corretto
+
+- Un messaggio oltre i 4096 caratteri viene ora pubblicato come più messaggi
+  consecutivi, spezzato tra un prodotto e l'altro. Telegram non tronca i
+  messaggi troppo lunghi, li rifiuta: il riepilogo iniziale degli alloggi
+  (5146 caratteri con i 28 prodotti in pagina) non sarebbe mai arrivato, lo
+  stato non sarebbe stato salvato e il bot avrebbe ritentato in silenzio a ogni
+  ciclo senza che il monitoraggio partisse mai. Vale anche per le risposte di
+  `/accommodation`, `/availability` e `/status`
+
 ## [1.1.0] - 2026-09-07
 
 ### Aggiunto
