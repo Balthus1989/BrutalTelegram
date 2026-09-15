@@ -112,6 +112,22 @@ def levels_crossed(previous_level: int, new_level: int) -> list[int]:
     return list(range(previous_level, new_level, -ALERT_STEP))
 
 
+def levels_crossed_up(previous_level: int, new_level: int) -> list[int]:
+    """
+    Soglie superate verso l'alto passando dalla banda `previous_level` alla
+    banda `new_level`, dalla più bassa alla più alta.
+
+    È il caso opposto di levels_crossed(): gli organizzatori immettono in
+    vendita una nuova tranche e la disponibilità risale. Entrare nella banda 20
+    significa essere tornati sopra il 20%: da 10.5% a 22% (banda 10 -> banda 20)
+    le soglie superate sono [15, 20]. L'ultima della lista è quella da
+    annunciare, le altre sono gli scaglioni risaliti tra due controlli.
+    """
+    if new_level <= previous_level:
+        return []
+    return list(range(previous_level + ALERT_STEP, new_level + ALERT_STEP, ALERT_STEP))
+
+
 def _has_sold_out_badge(node) -> bool:
     """True se nel blocco compare il badge rosso 'SOLD OUT' del template."""
     if node is None:

@@ -17,6 +17,26 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+### Aggiunto
+
+- Alert anche quando la disponibilità **risale**: se gli organizzatori mettono in
+  vendita una nuova tranche e la percentuale torna sopra un multiplo del 5%, il
+  gruppo riceve un avviso come per le discese, con la soglia più alta raggiunta e
+  l'elenco degli scaglioni risaliti in un colpo solo. Vale per i biglietti e per
+  gli alloggi
+- Annuncio del rientro in vendita di un prodotto dato per esaurito: chi ha letto
+  il SOLD OUT riceve un messaggio dedicato che dice che non vale più, invece di
+  doverlo dedurre da una percentuale
+
+### Modificato
+
+- Una risalita non è più muta. Prima rialzava lo scaglione in silenzio: il gruppo
+  vedeva solo l'ultima discesa e leggeva un "sotto il 20%" mentre il sito era già
+  tornato al 25%, e il monitoraggio sembrava rotto proprio quando c'era da dare la
+  notizia buona
+- `/availability` e `/accommodation` indicano entrambe le soglie che faranno
+  scattare un alert, quella in discesa e quella in risalita
+
 ## [1.2.0] - 2026-09-09
 
 ### Aggiunto

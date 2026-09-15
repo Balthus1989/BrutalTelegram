@@ -524,6 +524,7 @@ class AvailabilityLabels:
     none_on_sale: str     # frase per "niente in vendita al momento"
     sold_out_reason: str  # perché non si compra più, se il prodotto è ancora in pagina
     sold_out_tail: str    # dove mandare il gruppo dopo un sold out
+    new_batch: str        # cosa è successo quando la disponibilità risale
 
 
 TICKET_LABELS = AvailabilityLabels(
@@ -535,6 +536,7 @@ TICKET_LABELS = AvailabilityLabels(
     status_title="Biglietti in vendita sul sito ufficiale",
     none_on_sale="non risulta in vendita nessun biglietto",
     sold_out_reason="I biglietti sono esauriti sul sito ufficiale.",
+    new_batch="è stata messa in vendita una nuova tranche di biglietti",
     sold_out_tail=(
         f"🎟️ Resta il <a href=\"{XCHANGE_PAGE}\">Ticket Exchange</a>: "
         "gli annunci di rivendita vengono pubblicati qui in automatico."
@@ -550,6 +552,7 @@ ACCOMMODATION_LABELS = AvailabilityLabels(
     status_title="Hotel e campeggi sul sito ufficiale",
     none_on_sale="non risulta in vendita nessun alloggio",
     sold_out_reason="I posti sono esauriti sul sito ufficiale.",
+    new_batch="sono stati liberati altri posti",
     # Per gli alloggi non esiste un mercato di rivendita come il Ticket
     # Exchange: l'unica cosa vera da dire è che il gruppo verrà avvisato se il
     # sito rimette in vendita dei posti.
@@ -572,6 +575,17 @@ def format_percent(percent: float | None) -> str:
     if percent is None:
         return "n/d"
     return f"{math.floor(percent * 10) / 10:.1f}".replace(".", ",") + "%"
+
+
+def _soglia_su(soglia: int) -> str:
+    """
+    Come si dice una soglia raggiunta verso l'alto: 'sopra il 25%'.
+
+    Il 100% fa eccezione perché non si può superare: la disponibilità piena è
+    il tetto, e un "di nuovo sopra il 100%" descriverebbe qualcosa che non
+    esiste.
+    """
+    return "al 100%" if soglia >= 100 else f"sopra il {soglia}%"
 
 
 def _product_block(
@@ -653,10 +667,16 @@ def format_availability_status(
 
         blocco = _product_block(p.get("name"), p.get("url"), percent, sold_out, labels)
         if not sold_out and percent is not None:
-            # Il prossimo alert scatta uscendo dallo scaglione attuale; sotto il
-            # 5% non resta nessuna soglia intermedia, solo l'esaurimento.
+            # Il prossimo alert scatta uscendo dallo scaglione attuale, in un
+            # verso o nell'altro; sotto il 5% non resta nessuna soglia
+            # intermedia verso il basso, solo l'esaurimento.
             soglia = level_of(percent)
-            blocco += f"\n🔔 Prossimo avviso: {f'sotto il {soglia}%' if soglia else 'il sold out'}"
+            giu = f"sotto il {soglia}%" if soglia else "il sold out"
+            risalita = soglia + ALERT_STEP
+            blocco += (
+                f"\n🔔 Prossimo avviso: {giu}"
+                + (f" o di nuovo {_soglia_su(risalita)}" if risalita <= 100 else "")
+            )
         blocchi.append(blocco)
 
     return f"{labels.emoji} <b>{labels.status_title}</b>\n\n" + "\n\n".join(blocchi)
@@ -708,6 +728,70 @@ def format_availability_alert(
     righe.append("")
     righe.append("🏰 <i>Brutal Assault — Josefov</i>")
     return "\n".join(righe)
+
+
+def format_availability_rise(
+    product: dict,
+    soglia: int,
+    previous_percent: float | None,
+    crossed: list[int],
+    labels: AvailabilityLabels = TICKET_LABELS,
+) -> str:
+    """
+    Alert per una soglia di disponibilità appena superata verso l'alto.
+
+    La disponibilità non scende soltanto: gli organizzatori immettono in vendita
+    nuove tranche e la percentuale risale. Finché queste risalite restavano mute
+    il gruppo vedeva solo la discesa e leggeva un "sotto il 20%" quando il sito
+    era già tornato al 25%: il monitoraggio sembrava rotto proprio quando c'era
+    la notizia buona da dare, cioè che erano tornati biglietti acquistabili.
+
+    Args:
+        soglia: la soglia più alta effettivamente superata (l'ultima di `crossed`).
+    """
+    righe = [f"📈 <b>{labels.plural} di nuovo {_soglia_su(soglia)}!</b>", ""]
+    righe.append(
+        _product_block(
+            product.get("name"), product.get("url"), product.get("percent"), False, labels
+        )
+    )
+
+    if previous_percent is not None:
+        righe.append(f"🔄 All'ultimo controllo erano al {format_percent(previous_percent)}")
+
+    # Come per le discese, una risalita tra due controlli può attraversare più
+    # scaglioni insieme: l'alert resta uno solo, ma li dice tutti.
+    if len(crossed) > 1:
+        soglie = ", ".join(f"{s}%" for s in crossed)
+        righe.append(f"⏫ Soglie risalite in un colpo solo: {soglie}")
+
+    righe.append(f"🆕 Probabilmente {labels.new_batch}.")
+    righe.append("")
+    righe.append("🏰 <i>Brutal Assault — Josefov</i>")
+    return "\n".join(righe)
+
+
+def format_availability_back_on_sale(
+    product: dict,
+    labels: AvailabilityLabels = TICKET_LABELS,
+) -> str:
+    """
+    Un prodotto dato per esaurito è tornato acquistabile.
+
+    È la risalita più grossa che ci sia — da zero a una disponibilità reale — e
+    l'unica spiegazione possibile è una nuova tranche messa in vendita. Ha un
+    messaggio suo e non l'alert di soglia: chi ha letto il SOLD OUT si aspetta
+    di sapere che quel sold out non vale più, non di dedurlo da un "di nuovo
+    sopra il 20%".
+    """
+    return (
+        f"🟢 <b>{labels.plural} di nuovo in vendita!</b>\n\n"
+        + _product_block(
+            product.get("name"), product.get("url"), product.get("percent"), False, labels
+        )
+        + f"\n\n🆕 Il sold out annunciato non vale più: {labels.new_batch}.\n\n"
+        "🏰 <i>Brutal Assault — Josefov</i>"
+    )
 
 
 def format_availability_sold_out(

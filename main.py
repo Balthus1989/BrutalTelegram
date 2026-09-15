@@ -27,6 +27,7 @@ from tickets.availability_scraper import (
     is_sold_out,
     level_of,
     levels_crossed,
+    levels_crossed_up,
 )
 from tickets.availability_state import (
     AVAILABILITY_STATE_FILE,
@@ -60,8 +61,10 @@ from notifier import (
     ACCOMMODATION_LABELS,
     TICKET_LABELS,
     format_availability_alert,
+    format_availability_back_on_sale,
     format_availability_intro,
     format_availability_new,
+    format_availability_rise,
     format_availability_status,
     format_availability_sold_out,
     format_percent,
@@ -291,14 +294,29 @@ async def _check_availability(
 
         if not sold_out and record.get("sold_out"):
             # Tornato acquistabile dopo un esaurimento (nuova tranche immessa in
-            # vendita). Il flag va azzerato qui e non nel ramo della risalita:
-            # se rientra sotto il 5% lo scaglione resta 0, quel ramo non scatta e
-            # il prodotto resterebbe marcato esaurito pur essendo in vendita —
-            # con l'esaurimento successivo mai più annunciato.
+            # vendita): il gruppo ha letto un SOLD OUT che adesso non vale più,
+            # e va detto — è la risalita che interessa di più.
+            #
+            # Il flag va gestito qui e non nel ramo della risalita: se rientra
+            # sotto il 5% lo scaglione resta 0, quel ramo non scatta e il
+            # prodotto resterebbe marcato esaurito pur essendo in vendita, con
+            # l'esaurimento successivo mai più annunciato.
             logger.info(
                 f"'{record['name']}' di nuovo in vendita al {percent}% dopo il sold out."
             )
-            record["sold_out"] = False
+            if await send_availability_message(
+                app.bot, chat_id, topic_id, format_availability_back_on_sale(p, labels)
+            ):
+                record["sold_out"] = False
+                record["level"] = level
+                record["percent"] = percent
+            else:
+                # Stato non toccato: al prossimo ciclo il rientro viene
+                # riannunciato, invece di restare un sold out silenzioso.
+                logger.warning(
+                    f"Rientro in vendita di '{record['name']}' non inviato: ritento."
+                )
+            continue
 
         if sold_out and not record.get("sold_out"):
             logger.info(f"'{record['name']}': SOLD OUT ({previous_percent}% → {percent}%).")
@@ -313,16 +331,35 @@ async def _check_availability(
                 logger.warning(f"Sold out di '{record['name']}' non inviato: ritento.")
             continue
 
-        if level >= previous_level:
-            # Disponibilità stabile o risalita (nuova tranche in vendita): niente
-            # alert, ma lo scaglione va rialzato o le discese successive resterebbero mute.
-            if level > previous_level:
-                logger.info(
-                    f"Disponibilità di '{record['name']}' risalita a {percent}% "
-                    f"(scaglione {previous_level}% → {level}%)."
-                )
-                record["level"] = level
+        if level == previous_level:
+            # Stessa banda: la percentuale si muove ma nessuna soglia è stata
+            # attraversata, in nessuno dei due versi.
             record["percent"] = percent
+            continue
+
+        if level > previous_level:
+            # Risalita: gli organizzatori hanno immesso in vendita una nuova
+            # tranche. Vale un alert quanto una discesa — finché queste
+            # risalite restavano mute il gruppo leggeva un "sotto il 20%" con
+            # il sito già tornato al 25%, e il monitoraggio sembrava rotto.
+            crossed = levels_crossed_up(previous_level, level)
+            soglia = crossed[-1]  # la più alta effettivamente superata
+            logger.info(
+                f"'{record['name']}': {previous_percent}% → {percent}% — "
+                f"di nuovo sopra il {soglia}% (soglie risalite: {crossed})."
+            )
+
+            testo = format_availability_rise(p, soglia, previous_percent, crossed, labels)
+            if await send_availability_message(app.bot, chat_id, topic_id, testo):
+                record["level"] = level
+                record["percent"] = percent
+            else:
+                # Scaglione non registrato: l'alert viene ritentato al prossimo
+                # ciclo. Lo scaglione vecchio resta quello basso, quindi una
+                # discesa immediata non genera un falso "sotto il".
+                logger.warning(
+                    f"Alert di risalita al {soglia}% per '{record['name']}' non inviato: ritento."
+                )
             continue
 
         crossed = levels_crossed(previous_level, level)

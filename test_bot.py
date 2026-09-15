@@ -436,13 +436,70 @@ check("annuncia la soglia più bassa superata", "sotto il 25%" in botc.sent[0]["
 check("cita le soglie bruciate", "35%" in botc.sent[0]["text"] and "30%" in botc.sent[0]["text"])
 check("scaglione registrato", availability_state.load_availability_state()["products"]["1104"]["level"] == 20)
 
-print("\n=== 25. Disponibilità risalita -> nessun alert, scaglione rialzato ===")
+class FlakyBot(FakeBot):
+    """
+    Bot che rifiuta gli invii finché `muto` resta True.
+
+    Diverso da MuteBot (test 29), che rifiuta sempre: qui serve poter
+    riattivare l'invio e verificare che l'alert non inviato venga ritentato.
+    """
+    muto = True
+
+    async def send_message(self, chat_id, text, **kw):
+        if self.muto:
+            raise NetworkError("rete giù")
+        return await super().send_message(chat_id, text, **kw)
+
+
+print("\n=== 25. Disponibilità risalita -> alert di risalita, scaglione rialzato ===")
+# Gli organizzatori immettono in vendita una nuova tranche e la percentuale
+# torna su. Finché la risalita restava muta, il gruppo aveva letto solo il
+# "sotto il 25%" del test precedente: il sito diceva 41% e il bot sembrava rotto.
 botd = FakeBot()
 asyncio.run(run_avail(botd, [prodotto(41.0)]))     # nuova tranche in vendita
-check("nessun alert in risalita", botd.sent == [])
+check("un alert alla risalita", len(botd.sent) == 1)
+check("annuncia la soglia più alta risalita", "di nuovo sopra il 40%" in botd.sent[0]["text"])
+check("cita le soglie risalite", "25%" in botd.sent[0]["text"] and "35%" in botd.sent[0]["text"])
+check("dice da dove veniva", "22,0%" in botd.sent[0]["text"])
 check("scaglione rialzato a 40", availability_state.load_availability_state()["products"]["1104"]["level"] == 40)
+botd.sent.clear()
+asyncio.run(run_avail(botd, [prodotto(42.5)]))     # ancora nella banda 40
+check("nessun alert entro lo stesso scaglione in salita", botd.sent == [])
 asyncio.run(run_avail(botd, [prodotto(38.0)]))
 check("la discesa successiva riallerta", len(botd.sent) == 1 and "sotto il 40%" in botd.sent[0]["text"])
+
+print("\n=== 25b. Risalita di un solo scaglione -> alert senza elenco di soglie ===")
+reset_avail()
+botd2 = FakeBot()
+asyncio.run(run_avail(botd2, [prodotto(22.0)]))    # riepilogo iniziale, banda 20
+botd2.sent.clear()
+asyncio.run(run_avail(botd2, [prodotto(26.0)]))
+check("un alert alla risalita", len(botd2.sent) == 1)
+check("annuncia la soglia", "di nuovo sopra il 25%" in botd2.sent[0]["text"])
+check("nessun elenco per una soglia sola", "in un colpo solo" not in botd2.sent[0]["text"])
+
+print("\n=== 25c. Risalita al 100% -> non si dice 'sopra il 100%' ===")
+botd3 = FakeBot()
+asyncio.run(run_avail(botd3, [prodotto(100.0)]))
+check("disponibilità piena annunciata", len(botd3.sent) == 1)
+check("il 100% non si supera", "di nuovo al 100%" in botd3.sent[0]["text"])
+check("nessun 'sopra il 100%'", "sopra il 100%" not in botd3.sent[0]["text"])
+
+print("\n=== 25d. Alert di risalita non inviato -> lo scaglione non viene registrato ===")
+reset_avail()
+botd4 = FlakyBot()
+botd4.muto = False
+asyncio.run(run_avail(botd4, [prodotto(12.0)]))    # riepilogo iniziale, banda 10
+botd4.muto = True
+asyncio.run(run_avail(botd4, [prodotto(22.0)]))
+stato = availability_state.load_availability_state()["products"]["1104"]
+check("scaglione non rialzato dopo un invio fallito", stato["level"] == 10)
+check("percentuale non aggiornata", stato["percent"] == 12.0)
+botd4.muto = False
+botd4.sent.clear()
+asyncio.run(run_avail(botd4, [prodotto(22.0)]))
+check("la risalita viene riannunciata al ciclo dopo",
+      len(botd4.sent) == 1 and "di nuovo sopra il 20%" in botd4.sent[0]["text"])
 
 print("\n=== 26. Zero per cento -> sold out, annunciato una volta sola ===")
 reset_avail()
@@ -616,15 +673,42 @@ botn.sent.clear()
 asyncio.run(run_avail(botn, [prodotto(0.0, sold_out=True)]))
 check("primo sold out annunciato", len(botn.sent) == 1 and "SOLD OUT" in botn.sent[0]["text"])
 # Nuova tranche, ma sotto il 5%: lo scaglione resta 0 e il ramo della risalita
-# non scatta. Se il flag non venisse azzerato qui, il biglietto resterebbe
-# marcato esaurito pur essendo in vendita.
+# non scatta. Il rientro va annunciato lo stesso — il gruppo ha letto un SOLD
+# OUT che adesso non vale più — e il flag azzerato qui, altrimenti il biglietto
+# resterebbe marcato esaurito pur essendo in vendita.
 botn.sent.clear()
 asyncio.run(run_avail(botn, [prodotto(3.0)]))
 stato = availability_state.load_availability_state()["products"]["1104"]
 check("non più marcato esaurito sotto il 5%", stato["sold_out"] is False)
-check("nessun alert per il rientro", botn.sent == [])
+check("rientro in vendita annunciato", len(botn.sent) == 1)
+check("dice che il sold out non vale più",
+      "di nuovo in vendita" in botn.sent[0]["text"] and "3,0%" in botn.sent[0]["text"])
+botn.sent.clear()
 asyncio.run(run_avail(botn, [prodotto(0.0, sold_out=True)]))
 check("il secondo sold out viene annunciato", len(botn.sent) == 1 and "SOLD OUT" in botn.sent[0]["text"])
+
+print("\n=== 30d. Rientro in vendita non inviato -> resta esaurito e si ritenta ===")
+botn2 = FlakyBot()
+asyncio.run(run_avail(botn2, [prodotto(30.0)]))
+check("ancora marcato esaurito dopo l'invio fallito",
+      availability_state.load_availability_state()["products"]["1104"]["sold_out"] is True)
+botn2.muto = False
+asyncio.run(run_avail(botn2, [prodotto(30.0)]))
+check("un solo annuncio, non anche l'alert di soglia", len(botn2.sent) == 1)
+check("rientro riannunciato al ciclo dopo", "di nuovo in vendita" in botn2.sent[0]["text"])
+check("non più esaurito",
+      availability_state.load_availability_state()["products"]["1104"]["sold_out"] is False)
+
+print("\n=== 30e. Soglie attraversate verso l'alto ===")
+check("da 10,5% a 22% si risale sopra 15 e 20",
+      availability_scraper.levels_crossed_up(10, 20) == [15, 20])
+check("l'ultima è la più alta, ed è quella da annunciare",
+      availability_scraper.levels_crossed_up(10, 20)[-1] == 20)
+check("da sotto il 5% a 22%",
+      availability_scraper.levels_crossed_up(0, 20) == [5, 10, 15, 20])
+check("un solo scaglione", availability_scraper.levels_crossed_up(20, 25) == [25])
+check("stessa banda: nessuna soglia", availability_scraper.levels_crossed_up(20, 20) == [])
+check("in discesa non risale niente", availability_scraper.levels_crossed_up(35, 20) == [])
 
 print("\n=== 31. Nomi con caratteri speciali -> HTML valido ===")
 botj = FakeBot()
@@ -660,6 +744,8 @@ risposte = run_cmd([prodotto(35.012386457473)])
 check("risposta inviata dopo l'attesa", len(risposte) == 2)
 check("percentuale attuale", "35,0%" in risposte[1]["text"])
 check("annuncia la prossima soglia", "Prossimo avviso: sotto il 35%" in risposte[1]["text"])
+check("annuncia anche la risalita che farebbe scattare un alert",
+      "o di nuovo sopra il 40%" in risposte[1]["text"])
 check("inviato in HTML", risposte[1].get("parse_mode") == "HTML")
 
 risposte = run_cmd([prodotto(3.0)])

@@ -4,7 +4,7 @@ Bot Telegram che monitora il [Ticket Exchange ufficiale di Brutal Assault](https
 
 Quando un biglietto viene venduto, il messaggio corrispondente viene eliminato automaticamente dal gruppo. Le news vengono pubblicate con titolo e testo tradotti automaticamente in italiano, immagine di copertina e bottone al link originale.
 
-Monitora anche la percentuale di biglietti ancora in vendita per la prossima edizione sul sito ufficiale, avvisando il thread dei biglietti a ogni scaglione del 5% superato verso il basso, fino al sold out.
+Monitora anche la percentuale di biglietti ancora in vendita per la prossima edizione sul sito ufficiale, avvisando il thread dei biglietti a ogni scaglione del 5% attraversato — verso il basso fino al sold out, e verso l'alto quando gli organizzatori immettono in vendita una nuova tranche.
 
 Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede del festival) tramite comando e report automatici giornalieri nei giorni che precedono l'evento, con snapshot dalla webcam locale.
 
@@ -33,17 +33,25 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   fallire l'intero report
 - Monitoraggio della disponibilita dei biglietti della prossima edizione: la barra
   "Available" della scheda prodotto viene letta ogni 15 minuti e il gruppo riceve un
-  alert a ogni multiplo di 5% superato verso il basso (sotto il 35%, sotto il 30%, ...)
-  e uno finale al sold out
+  alert a ogni multiplo di 5% attraversato — verso il basso (sotto il 35%, sotto il
+  30%, ...) fino al sold out, e verso l'alto (di nuovo sopra il 20%, ...) quando la
+  disponibilita risale
 - Al primo avvio viene pubblicato un riepilogo con la percentuale attuale, anche se non
   e un multiplo di 5: serve anche a verificare che il bot scriva nel topic giusto
 - Comando `/availability` per interrogare la disponibilita in qualsiasi momento, con
-  indicazione della prossima soglia che fara scattare un alert; le percentuali sono
+  indicazione delle prossime soglie che faranno scattare un alert, in discesa e in
+  risalita; le percentuali sono
   sempre arrotondate per difetto, cosi il numero mostrato non promette mai piu
   biglietti di quanti ne restino
-- Se tra due controlli la disponibilita crolla di piu scaglioni, l'alert resta uno solo
-  ma cita le soglie bruciate; una risalita (nuova tranche in vendita) non genera alert
-  ma rialza la soglia, cosi le discese successive tornano a essere notificate
+- Se tra due controlli la disponibilita attraversa piu scaglioni, l'alert resta uno solo
+  ma li cita tutti: vale sia per un crollo sia per una risalita
+- La disponibilita non scende soltanto: gli organizzatori pubblicano nuove tranche e la
+  percentuale torna su. Anche la risalita viene annunciata, con lo stesso scaglione del
+  5% — senza, il gruppo leggeva un "sotto il 20%" mentre il sito era gia tornato al 25%
+  e il monitoraggio sembrava rotto
+- Un biglietto dato per esaurito che torna acquistabile ha un messaggio suo ("di nuovo
+  in vendita") e non un alert di soglia: chi ha letto il SOLD OUT deve sapere che non
+  vale piu, non dedurlo da una percentuale
 - Il sold out di una tipologia viene annunciato appena il sito la da per esaurita: un
   biglietto esaurito non ha piu la barra "Available" ma la scritta "Sold out", e nella
   pagina elenco un badge rosso — vale ognuno dei due segnali, cosi un cambio di
@@ -53,8 +61,9 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   2 cicli consecutivi di assenza
 - Lo stesso monitoraggio sugli alloggi della pagina
   [accommodation](https://brutalassault.cz/en/accommodation) — hotel, ready-to-camp e
-  piazzole dei vari campi: riepilogo iniziale, alert a ogni multiplo di 5% verso il basso
-  e annuncio del sold out, con un topic dedicato se configurato
+  piazzole dei vari campi: riepilogo iniziale, alert a ogni multiplo di 5% in discesa e
+  in risalita, annuncio del sold out e del rientro in vendita, con un topic dedicato se
+  configurato
 - Gli alloggi sono una sezione dello stesso shop dei biglietti (schede sotto
   `/en/tickets/detail/id/`, stesso template): il parsing non è duplicato, lo stesso
   motore riceve un'altra pagina e un altro filtro. Cambiano solo le parole dei messaggi
@@ -158,7 +167,8 @@ python test_bot.py
 Test funzionali offline (bot Telegram e siti simulati) su: notifica dei nuovi annunci,
 conferma della vendita, eliminazione dei messaggi con i vari fallback, resistenza agli
 errori di scraping, pubblicazione del report meteo e alert sulla disponibilita dei
-biglietti (riepilogo iniziale, soglie del 5%, crolli multi-soglia, sold out, invii falliti).
+biglietti (riepilogo iniziale, soglie del 5% in discesa e in risalita, crolli e risalite
+multi-soglia, sold out, rientro in vendita, invii falliti).
 
 ## Versionamento e rilasci
 
