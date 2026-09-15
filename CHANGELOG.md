@@ -17,6 +17,8 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+## [1.3.0] - 2026-09-15
+
 ### Aggiunto
 
 - Alert anche quando la disponibilità **risale**: se gli organizzatori mettono in
