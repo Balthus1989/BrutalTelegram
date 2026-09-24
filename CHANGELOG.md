@@ -17,6 +17,8 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+## [1.3.1] - 2026-09-24
+
 ### Corretto
 
 - Niente più annunci doppi per biglietti e alloggi già notificati. Il sito
