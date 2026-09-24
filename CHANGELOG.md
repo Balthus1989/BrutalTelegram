@@ -17,6 +17,8 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+## [1.3.3] - 2026-09-24
+
 ### Corretto
 
 - Un 429 mette in pausa tutte le richieste del ciclo, non solo quella che l'ha
