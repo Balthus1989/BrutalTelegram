@@ -17,6 +17,8 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+## [1.3.2] - 2026-09-24
+
 ### Corretto
 
 - Il bot torna a leggere lo shop: dall'IP di Fly.io il sito rispondeva 429 Too
