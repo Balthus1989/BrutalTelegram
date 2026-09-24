@@ -226,15 +226,20 @@ async def _check_availability(
     # verrebbe saltato a ogni ciclo senza che il sold out venga mai annunciato.
     seen_ids = {p["id"] for p in products}
     readable = []
+    skipped = []
     for p in products:
         if p["percent"] is None and p["sold_out"]:
             p["percent"] = 0.0
         if p["percent"] is None:
-            logger.warning(
-                f"Disponibilità non leggibile per '{p['name']}': prodotto saltato in questo ciclo."
-            )
+            skipped.append(p["name"])
             continue
         readable.append(p)
+    if skipped:
+        # Una riga sola: con il sito che risponde 429 sono decine di prodotti.
+        logger.warning(
+            f"Disponibilità non leggibile per {len(skipped)} prodotti {what}, "
+            f"saltati in questo ciclo: {', '.join(repr(n) for n in skipped)}"
+        )
 
     if not state["initialized"]:
         # Messaggio iniziale: serve anche a verificare che il bot scriva nel

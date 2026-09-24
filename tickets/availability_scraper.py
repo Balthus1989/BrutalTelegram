@@ -23,6 +23,8 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import httpx
@@ -47,9 +49,23 @@ PRODUCT_MATCH = os.getenv("TICKET_PRODUCT_MATCH", "2027")
 # limite verrebbero scartati in silenzio.
 MAX_PRODUCT_FETCHES = 25
 
-# Schede prodotto scaricate insieme. Senza limite un gather su tutta la pagina
-# alloggi apre quasi trenta connessioni simultanee allo stesso sito.
-MAX_CONCURRENT_FETCHES = 8
+# Schede prodotto scaricate insieme, e pausa di ogni connessione tra una
+# richiesta e la successiva. Con 8 schede alla volta e nessuna pausa il sito
+# rispondeva 429 Too Many Requests a tutte le schede alloggi: il bot non vedeva
+# più niente, nemmeno i sold out veri.
+MAX_CONCURRENT_FETCHES = 2
+REQUEST_PAUSE = 0.5
+
+# Risposta 429: si aspetta quanto chiede il sito (Retry-After) o, se non lo
+# dice, RETRY_BACKOFF secondi raddoppiati a ogni tentativo, mai oltre
+# MAX_RETRY_WAIT. Dopo MAX_RETRIES tentativi falliti il ciclo smette di
+# chiedere schede: insistere prolungherebbe solo il blocco.
+MAX_RETRIES = 2
+RETRY_BACKOFF = 5.0
+MAX_RETRY_WAIT = 30.0
+
+# Punto unico da cui passano le attese, così i test non aspettano davvero.
+_sleep = asyncio.sleep
 
 # Una lettura dello shop alla volta, qualunque pagina sia. Biglietti e alloggi
 # hanno la stessa cadenza e partivano nello stesso secondo: le due raffiche di
@@ -222,10 +238,80 @@ def parse_availability(html: str) -> tuple[Optional[float], bool, Optional[str]]
     return percent, sold_out, name
 
 
+def retry_wait(response: httpx.Response, attempt: int) -> float:
+    """
+    Secondi da aspettare dopo un 429.
+
+    Retry-After può essere un numero di secondi o una data HTTP; se manca o non
+    si legge si ripiega sul backoff esponenziale. In ogni caso mai oltre
+    MAX_RETRY_WAIT: il ciclo tiene il lock dello shop mentre aspetta.
+    """
+    value = response.headers.get("Retry-After", "").strip()
+    wait = None
+    if value.isdigit():
+        wait = float(value)
+    elif value:
+        try:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            wait = (when - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            wait = None
+    if wait is None or wait < 0:
+        wait = RETRY_BACKOFF * (2 ** attempt)
+    return min(wait, MAX_RETRY_WAIT)
+
+
+class _Throttle:
+    """Stato condiviso da un ciclo di letture: il sito ha già detto basta."""
+
+    def __init__(self) -> None:
+        self.hit = False
+
+
+async def _get_page(
+    client: httpx.AsyncClient,
+    url: str,
+    semaphore: asyncio.Semaphore,
+    throttle: _Throttle,
+) -> Optional[httpx.Response]:
+    """
+    GET con pausa tra le richieste e nuovi tentativi sul 429.
+
+    Returns:
+        La risposta, oppure None se il sito continua a rispondere 429 (o l'ha
+        già fatto a un'altra richiesta di questo ciclo): la pagina va trattata
+        come non letta. Gli altri errori HTTP vengono sollevati.
+    """
+    for attempt in range(MAX_RETRIES + 1):
+        if throttle.hit:
+            return None
+        async with semaphore:
+            response = await client.get(url)
+            await _sleep(REQUEST_PAUSE)
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response
+        if attempt < MAX_RETRIES:
+            wait = retry_wait(response, attempt)
+            logger.info(f"429 da {url}: riprovo tra {wait:.0f}s.")
+            await _sleep(wait)
+
+    if not throttle.hit:
+        throttle.hit = True
+        logger.warning(
+            f"Il sito risponde ancora 429 dopo {MAX_RETRIES} tentativi: "
+            f"le schede restanti si leggono al prossimo ciclo."
+        )
+    return None
+
+
 async def _fetch_product(
     client: httpx.AsyncClient,
     product: dict,
     semaphore: asyncio.Semaphore,
+    throttle: _Throttle,
 ) -> dict:
     """
     Scarica una scheda prodotto e ne estrae nome e disponibilità.
@@ -249,11 +335,12 @@ async def _fetch_product(
     }
 
     try:
-        async with semaphore:
-            response = await client.get(product["url"])
-        response.raise_for_status()
+        response = await _get_page(client, product["url"], semaphore, throttle)
     except httpx.HTTPError as e:
         logger.warning(f"Scheda prodotto {product['id']} non raggiungibile: {e}")
+        return unreadable
+    if response is None:
+        # Ciclo fermato dal 429, già segnalato una volta sola.
         return unreadable
 
     try:
@@ -361,8 +448,13 @@ async def _fetch_shop_availability(
         async with httpx.AsyncClient(
             headers=HEADERS, timeout=FETCH_TIMEOUT, follow_redirects=True
         ) as client:
-            response = await client.get(page_url)
-            response.raise_for_status()
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+            throttle = _Throttle()
+
+            response = await _get_page(client, page_url, semaphore, throttle)
+            if response is None:
+                logger.error(f"Pagina {label} rifiutata con 429: ciclo saltato.")
+                return None
 
             try:
                 products = parse_product_links(response.text)
@@ -381,9 +473,8 @@ async def _fetch_shop_availability(
                 )
                 return []
 
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
             results = await asyncio.gather(
-                *(_fetch_product(client, p, semaphore) for p in candidates)
+                *(_fetch_product(client, p, semaphore, throttle) for p in candidates)
             )
     except httpx.HTTPError as e:
         logger.error(f"Errore HTTP sulla pagina {label}: {e}")

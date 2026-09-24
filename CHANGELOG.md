@@ -17,6 +17,21 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+### Corretto
+
+- Il bot torna a leggere lo shop: dall'IP di Fly.io il sito rispondeva 429 Too
+  Many Requests a tutte le schede alloggi, e il monitoraggio non vedeva più
+  niente, nemmeno i sold out veri. Ora scarica al massimo 2 schede insieme con
+  una pausa tra le richieste; a un 429 aspetta quanto indica il sito
+  (`Retry-After`, al massimo 30 secondi) e riprova due volte, e se il sito
+  insiste smette di chiedere schede fino al ciclo successivo invece di
+  prolungare il blocco
+
+### Modificato
+
+- Le schede non lette in un ciclo finiscono in una sola riga di log, non in una
+  riga per prodotto
+
 ## [1.3.1] - 2026-09-24
 
 ### Corretto

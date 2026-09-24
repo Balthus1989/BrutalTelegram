@@ -674,21 +674,46 @@ ELENCO_429 = """
 """
 
 
-def shop_finto(schede_ok: bool):
-    """Sito finto: la pagina elenco risponde sempre, le schede solo se schede_ok."""
+attese = []
+
+
+async def attesa_finta(secondi):
+    """Registra le attese dello scraper senza aspettare davvero."""
+    attese.append(secondi)
+
+
+availability_scraper._sleep = attesa_finta
+
+
+def shop_finto(schede_ok: bool, elenco=ELENCO_429, risposte_429=None, richieste=None):
+    """
+    Sito finto: la pagina elenco risponde sempre, le schede solo se schede_ok.
+
+    risposte_429: se dato, le schede rispondono 429 (con questo Retry-After)
+    solo alla prima richiesta di ciascuna, poi 200.
+    richieste: lista in cui registrare i percorsi richiesti.
+    """
+    gia_rifiutate = set()
+
     def handler(request):
+        if richieste is not None:
+            richieste.append(request.url.path)
         if request.url.path == "/en/tickets":
-            return httpx.Response(200, text=ELENCO_429)
+            return httpx.Response(200, text=elenco)
+        if risposte_429 is not None and request.url.path not in gia_rifiutate:
+            gia_rifiutate.add(request.url.path)
+            return httpx.Response(429, headers={"Retry-After": risposte_429})
         if not schede_ok:
             return httpx.Response(429, text="Too Many Requests")
         return httpx.Response(200, text=SCHEDA_IN_VENDITA)
     return httpx.MockTransport(handler)
 
 
-def run_shop(schede_ok: bool):
+def run_shop(schede_ok: bool, **kw):
     vero_client = httpx.AsyncClient
+    transport = shop_finto(schede_ok, **kw)
     availability_scraper.httpx.AsyncClient = (
-        lambda **kw: vero_client(transport=shop_finto(schede_ok), **kw)
+        lambda **opzioni: vero_client(transport=transport, **opzioni)
     )
     try:
         return asyncio.run(availability_scraper.fetch_ticket_availability())
@@ -719,6 +744,69 @@ check("prodotto mai contato come assente", stato["1104"]["missing_count"] == 0)
 check("il badge dell'elenco non mette sotto osservazione il 1109", "1109" not in stato)
 asyncio.run(run_avail(botg2, run_shop(schede_ok=True)))
 check("nessun 'nuovo biglietto' quando le schede tornano leggibili", botg2.sent == [])
+
+print("\n=== 28c. 429 passeggero -> si aspetta quanto chiede il sito e si riprova ===")
+attese.clear()
+letti = run_shop(schede_ok=True, risposte_429="3")
+check("dopo il nuovo tentativo la scheda è letta",
+      {p["id"]: p["percent"] for p in letti}.get("1104") == 20.321264660887)
+check("nessuna scheda rimasta non letta", not any(p.get("unreadable") for p in letti))
+check("rispettato il Retry-After del sito", 3.0 in attese)
+check("pausa tra una richiesta e l'altra",
+      attese.count(availability_scraper.REQUEST_PAUSE) >= 3)
+
+print("\n=== 28d. 429 insistente -> il ciclo smette di chiedere schede ===")
+# Insistere con decine di richieste rifiutate prolunga solo il blocco: dopo i
+# tentativi a disposizione le schede restanti aspettano il ciclo dopo.
+ELENCO_LUNGO = "".join(
+    f'<div class="product-item"><a href="/en/tickets/detail/id/{2000 + i}" '
+    f'class="product_title">BRUTAL ASSAULT 2027 pass {i}</a></div>'
+    for i in range(12)
+)
+richieste = []
+letti = run_shop(schede_ok=False, elenco=ELENCO_LUNGO, richieste=richieste)
+schede_chieste = [r for r in richieste if "/detail/" in r]
+tentativi = availability_scraper.MAX_RETRIES + 1
+check("tutti i prodotti restano nel risultato, come non letti",
+      len(letti) == 12 and all(p.get("unreadable") for p in letti))
+check("smesso di chiedere dopo i tentativi a disposizione",
+      len(schede_chieste) <= availability_scraper.MAX_CONCURRENT_FETCHES * tentativi)
+check("molto meno di un tentativo pieno per ogni scheda", len(schede_chieste) < 12 * tentativi)
+
+print("\n=== 28e. Quanto aspettare dopo un 429 ===")
+def risposta_429(retry_after=None):
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return httpx.Response(429, headers=headers)
+
+from email.utils import format_datetime
+from datetime import datetime as _dt, timezone as _tz
+check("Retry-After in secondi", availability_scraper.retry_wait(risposta_429("7"), 0) == 7.0)
+fra_dieci = format_datetime(_dt.now(_tz.utc) + timedelta(seconds=10), usegmt=True)
+check("Retry-After come data HTTP",
+      8 <= availability_scraper.retry_wait(risposta_429(fra_dieci), 0) <= 10)
+check("senza Retry-After: backoff che raddoppia",
+      [availability_scraper.retry_wait(risposta_429(), a) for a in (0, 1)]
+      == [availability_scraper.RETRY_BACKOFF, availability_scraper.RETRY_BACKOFF * 2])
+check("mai oltre il tetto",
+      availability_scraper.retry_wait(risposta_429("3600"), 0) == availability_scraper.MAX_RETRY_WAIT)
+check("Retry-After illeggibile: backoff",
+      availability_scraper.retry_wait(risposta_429("presto"), 0) == availability_scraper.RETRY_BACKOFF)
+passata = format_datetime(_dt.now(_tz.utc) - timedelta(seconds=30), usegmt=True)
+check("data già passata: backoff, non attesa negativa",
+      availability_scraper.retry_wait(risposta_429(passata), 0) == availability_scraper.RETRY_BACKOFF)
+
+print("\n=== 28f. Pagina elenco rifiutata con 429 -> ciclo saltato, niente dedotto ===")
+def elenco_sempre_429(request):
+    return httpx.Response(429)
+vero_client = httpx.AsyncClient
+availability_scraper.httpx.AsyncClient = (
+    lambda **opzioni: vero_client(transport=httpx.MockTransport(elenco_sempre_429), **opzioni)
+)
+try:
+    check("fetch fallito, non 'nessun prodotto'",
+          asyncio.run(availability_scraper.fetch_ticket_availability()) is None)
+finally:
+    availability_scraper.httpx.AsyncClient = vero_client
 
 print("\n=== 29. Invio fallito -> soglia non registrata, alert ritentato ===")
 reset_avail()
