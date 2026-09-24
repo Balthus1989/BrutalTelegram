@@ -17,6 +17,16 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+### Corretto
+
+- Un 429 mette in pausa tutte le richieste del ciclo, non solo quella che l'ha
+  ricevuto. Con la 1.3.2, mentre una scheda aspettava il suo turno per
+  riprovare, l'altra connessione continuava a chiedere schede nuove, e ognuna
+  si prendeva il suo primo 429
+- Il ciclo smette di chiedere schede dopo 3 rifiuti di fila, contati sull'intero
+  ciclo. Contati scheda per scheda non scattavano quasi mai: il ritentativo di
+  una scheda finiva in coda dietro a tutte le altre
+
 ## [1.3.2] - 2026-09-24
 
 ### Corretto

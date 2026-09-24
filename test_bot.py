@@ -673,6 +673,11 @@ ELENCO_429 = """
 </div>
 """
 
+ELENCO_LUNGO = "".join(
+    f'<div class="product-item"><a href="/en/tickets/detail/id/{2000 + i}" '
+    f'class="product_title">BRUTAL ASSAULT 2027 pass {i}</a></div>'
+    for i in range(12)
+)
 
 attese = []
 
@@ -680,9 +685,13 @@ attese = []
 async def attesa_finta(secondi):
     """Registra le attese dello scraper senza aspettare davvero."""
     attese.append(secondi)
+    await asyncio.sleep(0)   # lascia girare le altre connessioni, come un'attesa vera
 
 
+# Orologio fermo: una pausa aperta da un 429 non scade da sola, quindi ogni
+# richiesta che la rispetta lascia un'attesa registrata.
 availability_scraper._sleep = attesa_finta
+availability_scraper._now = lambda: 0.0
 
 
 def shop_finto(schede_ok: bool, elenco=ELENCO_429, risposte_429=None, richieste=None):
@@ -755,23 +764,60 @@ check("rispettato il Retry-After del sito", 3.0 in attese)
 check("pausa tra una richiesta e l'altra",
       attese.count(availability_scraper.REQUEST_PAUSE) >= 3)
 
+print("\n=== 28c-bis. Un 429 ferma tutte le connessioni, non solo la sua ===")
+# In produzione, mentre una connessione aspettava i suoi 5 secondi l'altra
+# continuava a chiedere schede nuove: ognuna si prendeva il suo primo 429.
+def solo_il_primo_429(request):
+    if request.url.path == "/en/tickets":
+        return httpx.Response(200, text=ELENCO_LUNGO)
+    if not solo_il_primo_429.fatto:
+        solo_il_primo_429.fatto = True
+        return httpx.Response(429, headers={"Retry-After": "3"})
+    return httpx.Response(200, text=SCHEDA_IN_VENDITA)
+solo_il_primo_429.fatto = False
+
+attese.clear()
+vero_client = httpx.AsyncClient
+availability_scraper.httpx.AsyncClient = (
+    lambda **opzioni: vero_client(transport=httpx.MockTransport(solo_il_primo_429), **opzioni)
+)
+try:
+    letti = asyncio.run(availability_scraper.fetch_ticket_availability())
+finally:
+    availability_scraper.httpx.AsyncClient = vero_client
+check("tutte le schede lette dopo la pausa", not any(p.get("unreadable") for p in letti))
+check("ogni richiesta successiva rispetta la pausa aperta dal 429",
+      attese.count(3.0) >= len(letti) - availability_scraper.MAX_CONCURRENT_FETCHES)
+
 print("\n=== 28d. 429 insistente -> il ciclo smette di chiedere schede ===")
 # Insistere con decine di richieste rifiutate prolunga solo il blocco: dopo i
 # tentativi a disposizione le schede restanti aspettano il ciclo dopo.
-ELENCO_LUNGO = "".join(
-    f'<div class="product-item"><a href="/en/tickets/detail/id/{2000 + i}" '
-    f'class="product_title">BRUTAL ASSAULT 2027 pass {i}</a></div>'
-    for i in range(12)
-)
 richieste = []
 letti = run_shop(schede_ok=False, elenco=ELENCO_LUNGO, richieste=richieste)
 schede_chieste = [r for r in richieste if "/detail/" in r]
-tentativi = availability_scraper.MAX_RETRIES + 1
 check("tutti i prodotti restano nel risultato, come non letti",
       len(letti) == 12 and all(p.get("unreadable") for p in letti))
-check("smesso di chiedere dopo i tentativi a disposizione",
-      len(schede_chieste) <= availability_scraper.MAX_CONCURRENT_FETCHES * tentativi)
-check("molto meno di un tentativo pieno per ogni scheda", len(schede_chieste) < 12 * tentativi)
+check("smesso dopo pochi 429 di fila, non uno per scheda",
+      len(schede_chieste) <= availability_scraper.MAX_RETRIES + 1)
+
+print("\n=== 28d-bis. Una scheda sempre rifiutata non ferma le altre ===")
+def una_sempre_429(request):
+    if request.url.path == "/en/tickets":
+        return httpx.Response(200, text=ELENCO_LUNGO)
+    if request.url.path.endswith("/2000"):
+        return httpx.Response(429)
+    return httpx.Response(200, text=SCHEDA_IN_VENDITA)
+
+availability_scraper.httpx.AsyncClient = (
+    lambda **opzioni: vero_client(transport=httpx.MockTransport(una_sempre_429), **opzioni)
+)
+try:
+    letti = asyncio.run(availability_scraper.fetch_ticket_availability())
+finally:
+    availability_scraper.httpx.AsyncClient = vero_client
+non_letti = {p["id"] for p in letti if p.get("unreadable")}
+check("solo la scheda rifiutata resta non letta", non_letti == {"2000"})
+check("le altre undici lette", len(letti) - len(non_letti) == 11)
 
 print("\n=== 28e. Quanto aspettare dopo un 429 ===")
 def risposta_429(retry_after=None):

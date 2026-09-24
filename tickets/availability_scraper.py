@@ -64,8 +64,13 @@ MAX_RETRIES = 2
 RETRY_BACKOFF = 5.0
 MAX_RETRY_WAIT = 30.0
 
-# Punto unico da cui passano le attese, così i test non aspettano davvero.
+# Punti unici da cui passano attese e orologio, così i test non aspettano davvero.
 _sleep = asyncio.sleep
+
+
+def _now() -> float:
+    return asyncio.get_running_loop().time()
+
 
 # Una lettura dello shop alla volta, qualunque pagina sia. Biglietti e alloggi
 # hanno la stessa cadenza e partivano nello stesso secondo: le due raffiche di
@@ -264,10 +269,32 @@ def retry_wait(response: httpx.Response, attempt: int) -> float:
 
 
 class _Throttle:
-    """Stato condiviso da un ciclo di letture: il sito ha già detto basta."""
+    """
+    Stato condiviso da un ciclo di letture.
+
+    resume_at: istante (orologio del loop) prima del quale nessuna connessione
+    manda richieste. Un 429 ferma tutte le connessioni, non solo quella che l'ha
+    ricevuto: altrimenti, mentre una aspetta, l'altra continua a chiedere schede
+    nuove e ognuna si prende il suo primo 429.
+    strikes: 429 consecutivi nel ciclo, qualunque sia la pagina. Contati per
+    ciclo e non per pagina: il semaforo serve le richieste in ordine di arrivo,
+    e il ritentativo di una scheda finisce in coda dietro a tutte le altre, che
+    farebbero comunque il loro primo tentativo prima che una arrivi al terzo.
+    hit: troppi 429 di fila, il ciclo smette di chiedere.
+    """
 
     def __init__(self) -> None:
         self.hit = False
+        self.strikes = 0
+        self.resume_at = 0.0
+
+    def pause(self, seconds: float) -> None:
+        self.resume_at = max(self.resume_at, _now() + seconds)
+
+    async def wait(self) -> None:
+        delay = self.resume_at - _now()
+        if delay > 0:
+            await _sleep(delay)
 
 
 async def _get_page(
@@ -280,30 +307,39 @@ async def _get_page(
     GET con pausa tra le richieste e nuovi tentativi sul 429.
 
     Returns:
-        La risposta, oppure None se il sito continua a rispondere 429 (o l'ha
-        già fatto a un'altra richiesta di questo ciclo): la pagina va trattata
-        come non letta. Gli altri errori HTTP vengono sollevati.
+        La risposta, oppure None se il sito continua a rispondere 429: la
+        pagina va trattata come non letta. Gli altri errori HTTP vengono
+        sollevati.
     """
-    for attempt in range(MAX_RETRIES + 1):
-        if throttle.hit:
-            return None
+    for _ in range(MAX_RETRIES + 1):
         async with semaphore:
+            await throttle.wait()
+            if throttle.hit:
+                return None
             response = await client.get(url)
+            if response.status_code == 429:
+                throttle.strikes += 1
+                if throttle.strikes > MAX_RETRIES:
+                    throttle.hit = True
+                    logger.warning(
+                        f"Il sito risponde 429 a {throttle.strikes} richieste di fila: "
+                        f"le schede restanti si leggono al prossimo ciclo."
+                    )
+                    return None
+                # Prima di liberare il posto: chi entra dopo trova già la pausa.
+                wait = retry_wait(response, throttle.strikes - 1)
+                throttle.pause(wait)
+                logger.info(f"429 da {url}: tutte le richieste in pausa per {wait:.0f}s.")
+            else:
+                throttle.strikes = 0
             await _sleep(REQUEST_PAUSE)
         if response.status_code != 429:
             response.raise_for_status()
             return response
-        if attempt < MAX_RETRIES:
-            wait = retry_wait(response, attempt)
-            logger.info(f"429 da {url}: riprovo tra {wait:.0f}s.")
-            await _sleep(wait)
 
-    if not throttle.hit:
-        throttle.hit = True
-        logger.warning(
-            f"Il sito risponde ancora 429 dopo {MAX_RETRIES} tentativi: "
-            f"le schede restanti si leggono al prossimo ciclo."
-        )
+    # Tentativi di questa pagina finiti mentre le altre passano: si rinuncia
+    # solo a lei, il ciclo continua.
+    logger.warning(f"{url} ancora rifiutata con 429: non letta in questo ciclo.")
     return None
 
 

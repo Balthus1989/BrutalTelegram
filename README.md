@@ -62,9 +62,10 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   consecutivi di assenza. Resta comunque tracciato: se ricompare in vendita viene
   annunciato come rientro, mai una seconda volta come nuovo
 - Lo shop viene letto con discrezione: una pagina alla volta tra biglietti e
-  alloggi, al massimo 2 schede insieme con una pausa tra le richieste. A un 429 il
-  bot aspetta quanto chiede il sito (`Retry-After`, al massimo 30 secondi) e
-  riprova due volte; se il sito insiste, le schede restanti aspettano il ciclo dopo
+  alloggi, al massimo 2 schede insieme con una pausa tra le richieste. A un 429
+  tutte le richieste si fermano per quanto chiede il sito (`Retry-After`, al
+  massimo 30 secondi); dopo 3 rifiuti di fila le schede restanti aspettano il
+  ciclo dopo
 - Lo stesso monitoraggio sugli alloggi della pagina
   [accommodation](https://brutalassault.cz/en/accommodation) — hotel, ready-to-camp e
   piazzole dei vari campi: riepilogo iniziale, alert a ogni multiplo di 5% in discesa e
