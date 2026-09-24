@@ -51,6 +51,12 @@ MAX_PRODUCT_FETCHES = 25
 # alloggi apre quasi trenta connessioni simultanee allo stesso sito.
 MAX_CONCURRENT_FETCHES = 8
 
+# Una lettura dello shop alla volta, qualunque pagina sia. Biglietti e alloggi
+# hanno la stessa cadenza e partivano nello stesso secondo: le due raffiche di
+# schede sommate facevano rispondere al sito 429 Too Many Requests su quasi
+# tutti i prodotti.
+_SHOP_LOCK = asyncio.Lock()
+
 FETCH_TIMEOUT = 20.0
 
 # Scaglione delle notifiche: si avvisa a ogni multiplo di 5% attraversato.
@@ -220,21 +226,41 @@ async def _fetch_product(
     client: httpx.AsyncClient,
     product: dict,
     semaphore: asyncio.Semaphore,
-) -> Optional[dict]:
-    """Scarica una scheda prodotto e ne estrae nome e disponibilità."""
+) -> dict:
+    """
+    Scarica una scheda prodotto e ne estrae nome e disponibilità.
+
+    Una scheda non scaricata o non parsabile esce come disponibilità non
+    leggibile (percent None), mai scartata: il prodotto è comunque nell'elenco,
+    e se sparisse dal risultato il ciclo lo conterebbe come assente. Bastavano
+    due cicli di 429 dal sito per un falso SOLD OUT, seguito da un secondo
+    annuncio "nuovo biglietto" quando la scheda tornava leggibile.
+    """
+    unreadable = {
+        "id": product["id"],
+        "name": product["title"],
+        "url": product["url"],
+        "percent": None,
+        # Nemmeno il badge dell'elenco basta a dichiararlo esaurito: con la
+        # scheda mancante il nome è quello troncato dell'elenco, e un sold out
+        # si annuncia solo su una lettura completa.
+        "sold_out": False,
+        "unreadable": True,
+    }
+
     try:
         async with semaphore:
             response = await client.get(product["url"])
         response.raise_for_status()
     except httpx.HTTPError as e:
         logger.warning(f"Scheda prodotto {product['id']} non raggiungibile: {e}")
-        return None
+        return unreadable
 
     try:
         percent, sold_out, name = parse_availability(response.text)
     except Exception as e:
         logger.warning(f"Scheda prodotto {product['id']} non parsabile: {e}")
-        return None
+        return unreadable
 
     # Il badge <span class="sold_out"> dell'elenco vale quanto la scheda: sono
     # due segnali indipendenti dello stesso esaurimento, e basta che uno dei due
@@ -317,11 +343,20 @@ async def fetch_shop_availability(
         max_fetches: tetto alle schede prodotto scaricate in un ciclo.
 
     Returns:
-        Lista di dict con chiavi: id, name, url, percent, sold_out.
+        Lista di dict con chiavi: id, name, url, percent, sold_out. Un prodotto
+        in elenco la cui scheda non è stata letta c'è comunque, con percent
+        None e unreadable True.
         Lista vuota se nessun prodotto corrisponde (niente in vendita).
         None in caso di errore di rete o di pagina non riconoscibile — in quel
         caso il chiamante NON deve dedurre nessun esaurimento.
     """
+    async with _SHOP_LOCK:
+        return await _fetch_shop_availability(page_url, match, label, max_fetches)
+
+
+async def _fetch_shop_availability(
+    page_url: str, match: str, label: str, max_fetches: int
+) -> Optional[list[dict]]:
     try:
         async with httpx.AsyncClient(
             headers=HEADERS, timeout=FETCH_TIMEOUT, follow_redirects=True
@@ -354,11 +389,20 @@ async def fetch_shop_availability(
         logger.error(f"Errore HTTP sulla pagina {label}: {e}")
         return None
 
-    found = [r for r in results if r is not None and _matches(r["name"], match)]
+    # Le schede non lette restano tutte, anche se il nome troncato dell'elenco
+    # non passa il filtro: potrebbe essere un prodotto tracciato, e toglierlo
+    # dal risultato vorrebbe dire contarlo come sparito. Il ciclo le salta senza
+    # dedurne niente.
+    found = [r for r in results if r.get("unreadable") or _matches(r["name"], match)]
+    unreadable = sum(1 for r in found if r.get("unreadable"))
     logger.info(
-        f"Disponibilità {label}: {len(found)} prodotti monitorati. "
+        f"Disponibilità {label}: {len(found)} prodotti monitorati"
+        + (f", {unreadable} con scheda non letta" if unreadable else "")
+        + ". "
         + " | ".join(
-            f"{r['name'][:40]}: {'SOLD OUT' if r['sold_out'] else r['percent']}" for r in found
+            f"{r['name'][:40]}: "
+            f"{'non letta' if r.get('unreadable') else 'SOLD OUT' if r['sold_out'] else r['percent']}"
+            for r in found
         )
     )
     return found

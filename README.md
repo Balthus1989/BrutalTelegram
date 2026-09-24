@@ -56,9 +56,11 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   biglietto esaurito non ha piu la barra "Available" ma la scritta "Sold out", e nella
   pagina elenco un badge rosso — vale ognuno dei due segnali, cosi un cambio di
   template non fa passare l'esaurimento sotto silenzio
-- Una pagina non parsabile o una barra illeggibile non vengono mai interpretate come
-  sold out, e un biglietto sparito dallo shop viene dichiarato esaurito solo dopo
-  2 cicli consecutivi di assenza
+- Una pagina non parsabile, una barra illeggibile o una scheda prodotto che il sito
+  rifiuta (ad esempio con un 429) non vengono mai interpretate come sold out, e un
+  biglietto sparito dallo shop viene dichiarato esaurito solo dopo 2 cicli
+  consecutivi di assenza. Resta comunque tracciato: se ricompare in vendita viene
+  annunciato come rientro, mai una seconda volta come nuovo
 - Lo stesso monitoraggio sugli alloggi della pagina
   [accommodation](https://brutalassault.cz/en/accommodation) — hotel, ready-to-camp e
   piazzole dei vari campi: riepilogo iniziale, alert a ogni multiplo di 5% in discesa e

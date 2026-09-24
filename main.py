@@ -379,19 +379,26 @@ async def _check_availability(
 
     # Prodotti spariti dalla pagina: come per il Ticket Exchange servono più
     # cicli consecutivi di assenza prima di dichiararli esauriti.
-    for product_id in list(known.keys() - seen_ids):
+    #
+    # Il record non viene mai tolto dallo stato, resta marcato esaurito: se il
+    # prodotto ricomparisse da sconosciuto verrebbe annunciato una seconda volta
+    # come "nuovo", ed è il gruppo ad averlo già visto in vendita. Da esaurito
+    # invece ricade nei rami normali — di nuovo in vendita se è acquistabile,
+    # silenzio se è ancora esaurito.
+    for product_id in known.keys() - seen_ids:
         record = known[product_id]
         record["missing_count"] = record.get("missing_count", 0) + 1
+
+        if record.get("sold_out"):
+            # Sold out già annunciato, con la barra a 0 o per un'assenza
+            # precedente: niente doppione.
+            continue
+
         if record["missing_count"] < MISSING_POLLS_BEFORE_SOLD:
             logger.info(
                 f"'{record.get('name')}' non più in pagina "
                 f"({record['missing_count']}/{MISSING_POLLS_BEFORE_SOLD}): attendo conferma."
             )
-            continue
-
-        if record.get("sold_out"):
-            # Sold out già annunciato quando la barra era a 0: niente doppione.
-            known.pop(product_id, None)
             continue
 
         if await send_availability_message(
@@ -400,7 +407,9 @@ async def _check_availability(
             topic_id,
             format_availability_sold_out(record, still_listed=False, labels=labels),
         ):
-            known.pop(product_id, None)
+            record["sold_out"] = True
+            record["level"] = 0
+            record["percent"] = 0.0
 
     if not save_availability_state(state, state_file):
         logger.error(

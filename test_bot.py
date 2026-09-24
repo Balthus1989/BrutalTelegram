@@ -609,7 +609,38 @@ check("assenza contata", availability_state.load_availability_state()["products"
 asyncio.run(run_avail(botf, []))
 check("sold out al secondo ciclo", len(botf.sent) == 1 and "SOLD OUT" in botf.sent[0]["text"])
 check("ultima disponibilità citata", "3,0%" in botf.sent[0]["text"])
-check("prodotto non più tracciato", availability_state.load_availability_state()["products"] == {})
+stato = availability_state.load_availability_state()["products"]
+check("resta tracciato, marcato esaurito", stato["1104"]["sold_out"] is True)
+asyncio.run(run_avail(botf, []))
+check("nessun doppione ai cicli di assenza successivi", len(botf.sent) == 1)
+
+print("\n=== 27b. Sparito e annunciato esaurito, poi ricompare -> nessun 'nuovo biglietto' ===")
+# Ricompare ancora esaurito: il sold out è già stato detto.
+botf.sent.clear()
+asyncio.run(run_avail(botf, [prodotto(0.0, sold_out=True)]))
+check("ricomparso esaurito: silenzio", botf.sent == [])
+# Ricompare acquistabile: il gruppo l'ha già visto in vendita, quindi non è una
+# novità ma un rientro. Prima il record veniva tolto dallo stato e il biglietto
+# veniva annunciato una seconda volta come "Nuovo biglietto".
+asyncio.run(run_avail(botf, [prodotto(40.0)]))
+check("un solo messaggio al ritorno", len(botf.sent) == 1)
+check("annunciato come rientro, non come nuovo",
+      "di nuovo in vendita" in botf.sent[0]["text"] and "Nuovo biglietto" not in botf.sent[0]["text"])
+stato = availability_state.load_availability_state()["products"]["1104"]
+check("di nuovo in vendita nello stato", stato["sold_out"] is False and stato["level"] == 40)
+check("assenze azzerate", stato["missing_count"] == 0)
+
+print("\n=== 27c. Esaurito già annunciato che sparisce -> nessun messaggio, resta tracciato ===")
+reset_avail()
+botf2 = FakeBot()
+asyncio.run(run_avail(botf2, [prodotto(3.0)]))     # riepilogo iniziale
+asyncio.run(run_avail(botf2, [prodotto(0.0, sold_out=True)]))
+botf2.sent.clear()
+for _ in range(3):
+    asyncio.run(run_avail(botf2, []))
+check("nessun secondo sold out per l'assenza", botf2.sent == [])
+asyncio.run(run_avail(botf2, [prodotto(0.0, sold_out=True)]))
+check("ricomparso esaurito: nessun annuncio", botf2.sent == [])
 
 print("\n=== 28. Pagina illeggibile -> nessun messaggio, stato intatto ===")
 reset_avail()
@@ -622,6 +653,72 @@ check("soglia invariata", availability_state.load_availability_state()["products
 asyncio.run(run_avail(botg, [prodotto(None)]))     # barra non parsabile
 check("nessun sold out per barra illeggibile", botg.sent == [])
 check("nessuna assenza contata", availability_state.load_availability_state()["products"]["1104"]["missing_count"] == 0)
+
+print("\n=== 28b. Schede prodotto rifiutate con 429 -> illeggibili, non sparite ===")
+# Il caso visto in produzione: biglietti e alloggi partono nello stesso secondo
+# e il sito risponde 429 a quasi tutte le schede. Un prodotto con la scheda
+# rifiutata spariva dal risultato: due cicli così davano un falso SOLD OUT, e al
+# ritorno della scheda un secondo annuncio "Nuovo biglietto".
+import httpx
+
+ELENCO_429 = """
+<div class="product-1104 product item ticket ticket_item product-item ">
+  <div class="product_title-wrap">
+    <a href="/en/tickets/detail/id/1104" class="product_title">first edition BRUTAL ASSAULT 2027 festival pass</a></div>
+</div>
+<div class="product-1109 product item ticket ticket_item product-item ">
+  <div class="product_image-wrap"><span class="sold_out">sold out</span></div>
+  <div class="product_title-wrap">
+    <a href="/en/tickets/detail/id/1109" class="product_title">BA 2027 natural st...</a></div>
+</div>
+"""
+
+
+def shop_finto(schede_ok: bool):
+    """Sito finto: la pagina elenco risponde sempre, le schede solo se schede_ok."""
+    def handler(request):
+        if request.url.path == "/en/tickets":
+            return httpx.Response(200, text=ELENCO_429)
+        if not schede_ok:
+            return httpx.Response(429, text="Too Many Requests")
+        return httpx.Response(200, text=SCHEDA_IN_VENDITA)
+    return httpx.MockTransport(handler)
+
+
+def run_shop(schede_ok: bool):
+    vero_client = httpx.AsyncClient
+    availability_scraper.httpx.AsyncClient = (
+        lambda **kw: vero_client(transport=shop_finto(schede_ok), **kw)
+    )
+    try:
+        return asyncio.run(availability_scraper.fetch_ticket_availability())
+    finally:
+        availability_scraper.httpx.AsyncClient = vero_client
+
+
+letti = run_shop(schede_ok=False)
+check("i prodotti con scheda rifiutata restano nel risultato",
+      letti is not None and {p["id"] for p in letti} == {"1104", "1109"})
+check("disponibilità non leggibile, non zero", all(p["percent"] is None for p in letti))
+check("nessun esaurimento dedotto, nemmeno dal badge dell'elenco",
+      not any(availability_scraper.is_sold_out(p) for p in letti))
+
+letti = run_shop(schede_ok=True)
+check("con le schede leggibili la percentuale torna",
+      {p["id"]: p["percent"] for p in letti}.get("1104") == 20.321264660887)
+
+reset_avail()
+botg2 = FakeBot()
+asyncio.run(run_avail(botg2, [prodotto(20.321264660887)]))    # riepilogo iniziale
+botg2.sent.clear()
+for _ in range(3):
+    asyncio.run(run_avail(botg2, run_shop(schede_ok=False)))
+check("nessun falso sold out durante i 429", botg2.sent == [])
+stato = availability_state.load_availability_state()["products"]
+check("prodotto mai contato come assente", stato["1104"]["missing_count"] == 0)
+check("il badge dell'elenco non mette sotto osservazione il 1109", "1109" not in stato)
+asyncio.run(run_avail(botg2, run_shop(schede_ok=True)))
+check("nessun 'nuovo biglietto' quando le schede tornano leggibili", botg2.sent == [])
 
 print("\n=== 29. Invio fallito -> soglia non registrata, alert ritentato ===")
 reset_avail()

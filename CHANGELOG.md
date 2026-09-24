@@ -17,6 +17,22 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+### Corretto
+
+- Niente più annunci doppi per biglietti e alloggi già notificati. Il sito
+  rispondeva 429 Too Many Requests a molte schede prodotto, e un prodotto con la
+  scheda rifiutata spariva dal risultato: dopo due cicli il bot annunciava un
+  SOLD OUT falso, e quando la scheda tornava leggibile annunciava lo stesso
+  prodotto una seconda volta come "nuovo". Ora una scheda non letta vale come
+  disponibilità illeggibile — il prodotto viene saltato per quel ciclo senza
+  dedurne niente
+- Un prodotto sparito dallo shop e annunciato come esaurito resta nello stato
+  invece di esserne tolto: se ricompare in vendita il gruppo riceve il messaggio
+  di rientro, non un secondo "nuovo biglietto"
+- Biglietti e alloggi non interrogano più lo shop nello stesso momento: le due
+  letture partivano nello stesso secondo, ed è la raffica sommata a far
+  scattare il 429
+
 ## [1.3.0] - 2026-09-15
 
 ### Aggiunto
