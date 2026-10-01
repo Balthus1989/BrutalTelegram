@@ -23,6 +23,7 @@ from tickets.ticket_state import STATE_FILE, load_state, save_state, make_record
 from tickets.availability_scraper import (
     ALERT_STEP,
     PRODUCT_MATCH,
+    RESALE_MIN_PERCENT,
     fetch_ticket_availability,
     is_sold_out,
     level_of,
@@ -64,6 +65,7 @@ from notifier import (
     format_availability_back_on_sale,
     format_availability_intro,
     format_availability_new,
+    format_availability_new_many,
     format_availability_rise,
     format_availability_status,
     format_availability_sold_out,
@@ -257,6 +259,7 @@ async def _check_availability(
             logger.error("Stato disponibilità non salvato: il riepilogo verrà ripubblicato.")
         return
 
+    new_products = []
     for p in readable:
         percent = p["percent"]
         level = level_of(percent)
@@ -279,12 +282,22 @@ async def _check_availability(
                 )
                 continue
 
+            if percent < RESALE_MIN_PERCENT:
+                # Stesso motivo del rientro in vendita più sotto: un prodotto
+                # mai visto che compare con un posto o due liberati da un
+                # carrello scaduto torna esaurito dopo poco, e un "nuovo
+                # biglietto" seguito da un SOLD OUT è solo rumore. Non viene
+                # tracciato, così viene annunciato se la disponibilità sale.
+                logger.info(
+                    f"'{p['name']}' compare al {percent}%, sotto il "
+                    f"{RESALE_MIN_PERCENT}%: nessun annuncio."
+                )
+                continue
+
             # Prodotto comparso dopo l'avvio del monitoraggio (nuova tipologia
-            # messa in vendita): lo si annuncia e si parte a tracciarlo da qui.
-            if await send_availability_message(
-                app.bot, chat_id, topic_id, format_availability_new(p, labels)
-            ):
-                known[p["id"]] = make_availability_record(p, level)
+            # messa in vendita): annunciato a fine ciclo insieme agli altri
+            # comparsi adesso, e tracciato da lì.
+            new_products.append(p)
             continue
 
         record["missing_count"] = 0
@@ -297,15 +310,29 @@ async def _check_availability(
         # l'esaurimento non produrrebbe nessun cambio di scaglione da notificare.
         sold_out = is_sold_out(p)
 
+        if not sold_out and record.get("sold_out") and percent < RESALE_MIN_PERCENT:
+            # Qualche posto liberato da carrelli scaduti o disdette: torna
+            # esaurito dopo poco. Annunciarlo voleva dire un "di nuovo in
+            # vendita" con lo 0,0% disponibile seguito da un secondo SOLD OUT,
+            # più volte nella stessa notte. Il record resta esaurito — è quello
+            # che il gruppo sa — e il prossimo esaurimento passa in silenzio,
+            # perché non è mai stato annunciato un rientro.
+            record["percent"] = percent
+            logger.info(
+                f"'{record['name']}' acquistabile al {percent}% dopo il sold out, "
+                f"sotto il {RESALE_MIN_PERCENT}%: nessun annuncio."
+            )
+            continue
+
         if not sold_out and record.get("sold_out"):
             # Tornato acquistabile dopo un esaurimento (nuova tranche immessa in
             # vendita): il gruppo ha letto un SOLD OUT che adesso non vale più,
             # e va detto — è la risalita che interessa di più.
             #
-            # Il flag va gestito qui e non nel ramo della risalita: se rientra
-            # sotto il 5% lo scaglione resta 0, quel ramo non scatta e il
-            # prodotto resterebbe marcato esaurito pur essendo in vendita, con
-            # l'esaurimento successivo mai più annunciato.
+            # Il flag va gestito qui e non nel ramo della risalita: il rientro
+            # è un messaggio a sé, e un prodotto rimasto marcato esaurito pur
+            # essendo in vendita non vedrebbe mai annunciato l'esaurimento
+            # successivo.
             logger.info(
                 f"'{record['name']}' di nuovo in vendita al {percent}% dopo il sold out."
             )
@@ -367,7 +394,15 @@ async def _check_availability(
                 )
             continue
 
-        crossed = levels_crossed(previous_level, level)
+        # Il 100% non è una soglia da annunciare in discesa: "sotto il 100%"
+        # vuol dire solo che è stato venduto il primo biglietto di una
+        # tipologia appena aperta, ed è arrivato col 99,9% mezz'ora dopo
+        # l'annuncio del nuovo pass. Il primo avviso è il 95%.
+        crossed = [s for s in levels_crossed(previous_level, level) if s < 100]
+        if not crossed:
+            record["level"] = level
+            record["percent"] = percent
+            continue
         soglia = crossed[-1]  # la più bassa effettivamente superata
         logger.info(
             f"'{record['name']}': {previous_percent}% → {percent}% — "
@@ -381,6 +416,23 @@ async def _check_availability(
         else:
             # Scaglione non registrato: l'alert viene ritentato al prossimo ciclo.
             logger.warning(f"Alert {soglia}% per '{record['name']}' non inviato: ritento.")
+
+    # Nuovi prodotti di questo ciclo: uno solo ha il suo messaggio, più di uno
+    # finiscono in un messaggio unico invece di una raffica. Vengono tracciati
+    # solo se l'annuncio è partito, altrimenti si ritenta al ciclo dopo.
+    if new_products:
+        testo = (
+            format_availability_new(new_products[0], labels)
+            if len(new_products) == 1
+            else format_availability_new_many(new_products, labels)
+        )
+        if await send_availability_message(app.bot, chat_id, topic_id, testo):
+            for p in new_products:
+                known[p["id"]] = make_availability_record(p, level_of(p["percent"]))
+        else:
+            logger.warning(
+                f"Annuncio di {len(new_products)} nuovi prodotti {what} non inviato: ritento."
+            )
 
     # Prodotti spariti dalla pagina: come per il Ticket Exchange servono più
     # cicli consecutivi di assenza prima di dichiararli esauriti.

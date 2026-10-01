@@ -574,6 +574,11 @@ def format_percent(percent: float | None) -> str:
     """
     if percent is None:
         return "n/d"
+    if 0 < percent < 0.1:
+        # Per difetto con un decimale verrebbe "0,0%", che sembra un sold out:
+        # sotto lo 0,1% si mostrano due decimali, e mai meno di 0,01.
+        centesimi = max(0.01, math.floor(percent * 100) / 100)
+        return f"{centesimi:.2f}".replace(".", ",") + "%"
     return f"{math.floor(percent * 10) / 10:.1f}".replace(".", ",") + "%"
 
 
@@ -671,7 +676,10 @@ def format_availability_status(
             # verso o nell'altro; sotto il 5% non resta nessuna soglia
             # intermedia verso il basso, solo l'esaurimento.
             soglia = level_of(percent)
-            giu = f"sotto il {soglia}%" if soglia else "il sold out"
+            # Dal 100% il primo alert in discesa è il 95%: "sotto il 100%" non
+            # viene annunciato (vedi il ciclo di controllo in main).
+            soglia_giu = min(soglia, 100 - ALERT_STEP)
+            giu = f"sotto il {soglia_giu}%" if soglia else "il sold out"
             risalita = soglia + ALERT_STEP
             blocco += (
                 f"\n🔔 Prossimo avviso: {giu}"
@@ -692,6 +700,28 @@ def format_availability_new(
         + _product_block(
             product.get("name"), product.get("url"), product.get("percent"), False, labels
         )
+        + "\n\n🏰 <i>Brutal Assault — Josefov</i>"
+    )
+
+
+def format_availability_new_many(
+    products: list[dict],
+    labels: AvailabilityLabels = TICKET_LABELS,
+) -> str:
+    """
+    Più prodotti comparsi in vendita nello stesso controllo: un messaggio solo.
+
+    Il 24/09 il gruppo ha ricevuto otto "Nuovo biglietto" uno dietro l'altro
+    nello stesso minuto, e alzando il tetto della pagina alloggi le 36 piazzole
+    dei camp sarebbero arrivate una per messaggio.
+    """
+    blocchi = [
+        _product_block(p.get("name"), p.get("url"), p.get("percent"), False, labels)
+        for p in products
+    ]
+    return (
+        f"🆕 <b>{len(products)} nuovi {labels.section} in vendita sul sito ufficiale!</b>\n\n"
+        + "\n\n".join(blocchi)
         + "\n\n🏰 <i>Brutal Assault — Josefov</i>"
     )
 

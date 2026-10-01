@@ -17,6 +17,36 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+### Corretto
+
+- Le piazzole e le tende dei camp tornano sotto osservazione. La pagina alloggi
+  è passata da 28 a 82 prodotti, con i nuovi hotel in cima, e con il tetto a 40
+  i 36 prodotti dei camp, tutti in vendita, non venivano più controllati. Il
+  tetto sale a 120 per gli alloggi e a 50 per i biglietti, e un prodotto oltre
+  il tetto resta "non letto" invece di sparire dal risultato: prima sarebbe
+  stato contato come sparito e dato per esaurito
+- Niente più "di nuovo in vendita" per un posto o due liberati da carrelli
+  scaduti: il pass first edition è stato dato di nuovo in vendita due volte in
+  una notte con lo "0,0%" disponibile, seguito ogni volta da un secondo SOLD
+  OUT, e così l'hotel TREE OF LIFE all'1,9%. Un prodotto esaurito viene
+  annunciato come rientrato solo da una disponibilità del 5%; sotto, per il
+  gruppo resta esaurito e il successivo esaurimento passa in silenzio. Vale
+  anche per un prodotto mai visto che compare sotto il 5%
+- Nessun "sotto il 100%" alla prima vendita di una tipologia appena aperta: il
+  primo avviso in discesa è il 95%, anche nella risposta di `/availability`
+- Una disponibilità minuscola non viene più mostrata come "0,0%", che sembra un
+  sold out: sotto lo 0,1% si vedono due decimali
+- Un sito che non risponde più (timeout di connessione, come quando blocca un
+  IP) ferma il ciclo dopo 3 errori di fila, come il 429: prima ognuna delle
+  schede aspettava 20 secondi, e la pagina alloggi da sola teneva occupato il
+  bot per più di 10 minuti. Il log dice anche il tipo di errore, che per un
+  timeout era una riga vuota
+
+### Modificato
+
+- Più prodotti comparsi in vendita nello stesso controllo arrivano in un solo
+  messaggio, invece di uno per prodotto
+
 ## [1.3.3] - 2026-09-24
 
 ### Corretto

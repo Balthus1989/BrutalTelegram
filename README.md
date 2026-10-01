@@ -51,7 +51,12 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   e il monitoraggio sembrava rotto
 - Un biglietto dato per esaurito che torna acquistabile ha un messaggio suo ("di nuovo
   in vendita") e non un alert di soglia: chi ha letto il SOLD OUT deve sapere che non
-  vale piu, non dedurlo da una percentuale
+  vale piu, non dedurlo da una percentuale. Serve almeno il 5% di disponibilita: sotto
+  sono posti liberati da carrelli scaduti, che tornano esauriti dopo poco, e per il
+  gruppo il biglietto resta esaurito. Lo stesso vale per un prodotto nuovo
+- Il primo alert in discesa di una tipologia appena aperta e "sotto il 95%": il primo
+  biglietto venduto non vale un "sotto il 100%"
+- Piu prodotti comparsi nello stesso controllo arrivano in un messaggio solo
 - Il sold out di una tipologia viene annunciato appena il sito la da per esaurita: un
   biglietto esaurito non ha piu la barra "Available" ma la scritta "Sold out", e nella
   pagina elenco un badge rosso — vale ognuno dei due segnali, cosi un cambio di
@@ -65,7 +70,9 @@ Include inoltre un servizio meteo che fornisce previsioni per Jaroměř (sede de
   alloggi, al massimo 2 schede insieme con una pausa tra le richieste. A un 429
   tutte le richieste si fermano per quanto chiede il sito (`Retry-After`, al
   massimo 30 secondi); dopo 3 rifiuti di fila le schede restanti aspettano il
-  ciclo dopo
+  ciclo dopo. Le schede lette in un ciclo hanno un tetto (50 biglietti, 120
+  alloggi): un prodotto oltre il tetto resta "non letto", mai dato per esaurito,
+  e il log lo segnala a ogni ciclo
 - Lo stesso monitoraggio sugli alloggi della pagina
   [accommodation](https://brutalassault.cz/en/accommodation) — hotel, ready-to-camp e
   piazzole dei vari campi: riepilogo iniziale, alert a ogni multiplo di 5% in discesa e

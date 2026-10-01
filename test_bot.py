@@ -800,6 +800,28 @@ check("tutti i prodotti restano nel risultato, come non letti",
 check("smesso dopo pochi 429 di fila, non uno per scheda",
       len(schede_chieste) <= availability_scraper.MAX_RETRIES + 1)
 
+print("\n=== 28d-ter. Il sito non risponde più -> il ciclo smette dopo pochi timeout ===")
+# Quando il sito blocca un IP non risponde 429: la connessione va in timeout.
+# Prima ognuna delle schede aspettava i suoi 20 secondi.
+richieste_timeout = []
+def sempre_timeout(request):
+    if request.url.path == "/en/tickets":
+        return httpx.Response(200, text=ELENCO_LUNGO)
+    richieste_timeout.append(request.url.path)
+    raise httpx.ConnectTimeout("timed out", request=request)
+
+availability_scraper.httpx.AsyncClient = (
+    lambda **opzioni: vero_client(transport=httpx.MockTransport(sempre_timeout), **opzioni)
+)
+try:
+    letti = asyncio.run(availability_scraper.fetch_ticket_availability())
+finally:
+    availability_scraper.httpx.AsyncClient = vero_client
+check("tutti i prodotti restano, come non letti",
+      len(letti) == 12 and all(p.get("unreadable") for p in letti))
+check("smesso dopo pochi timeout di fila",
+      len(richieste_timeout) <= availability_scraper.MAX_RETRIES + availability_scraper.MAX_CONCURRENT_FETCHES)
+
 print("\n=== 28d-bis. Una scheda sempre rifiutata non ferma le altre ===")
 def una_sempre_429(request):
     if request.url.path == "/en/tickets":
@@ -896,24 +918,33 @@ check("annunciato quando torna in vendita", len(botm.sent) == 1 and "Nuovo bigli
 check("con la sua disponibilità", "75,0%" in botm.sent[0]["text"])
 check("ora tracciato", "1210" in availability_state.load_availability_state()["products"])
 
-print("\n=== 30c. Esaurito, tornato in vendita, esaurito di nuovo -> due annunci ===")
+print("\n=== 30c. Esaurito, qualche posto liberato, esaurito di nuovo -> un solo annuncio ===")
+# Il caso visto in produzione sul pass first edition: dopo il SOLD OUT il sito
+# torna a mostrare lo 0,03% (carrelli scaduti) e poi di nuovo esaurito, due
+# volte in una notte. Prima ogni giro valeva un "di nuovo in vendita" con lo
+# "0,0%" disponibile e un secondo SOLD OUT.
 reset_avail()
 botn = FakeBot()
 asyncio.run(run_avail(botn, [prodotto(8.0)]))      # riepilogo iniziale
 botn.sent.clear()
 asyncio.run(run_avail(botn, [prodotto(0.0, sold_out=True)]))
 check("primo sold out annunciato", len(botn.sent) == 1 and "SOLD OUT" in botn.sent[0]["text"])
-# Nuova tranche, ma sotto il 5%: lo scaglione resta 0 e il ramo della risalita
-# non scatta. Il rientro va annunciato lo stesso — il gruppo ha letto un SOLD
-# OUT che adesso non vale più — e il flag azzerato qui, altrimenti il biglietto
-# resterebbe marcato esaurito pur essendo in vendita.
 botn.sent.clear()
-asyncio.run(run_avail(botn, [prodotto(3.0)]))
+for _ in range(2):
+    asyncio.run(run_avail(botn, [prodotto(0.03)]))
+    asyncio.run(run_avail(botn, [prodotto(0.0, sold_out=True)]))
+check("nessun rientro allo 0,03% e nessun secondo sold out", botn.sent == [])
+asyncio.run(run_avail(botn, [prodotto(1.9)]))      # un posto su 52: TREE OF LIFE
+check("nemmeno all'1,9%", botn.sent == [])
 stato = availability_state.load_availability_state()["products"]["1104"]
-check("non più marcato esaurito sotto il 5%", stato["sold_out"] is False)
-check("rientro in vendita annunciato", len(botn.sent) == 1)
-check("dice che il sold out non vale più",
-      "di nuovo in vendita" in botn.sent[0]["text"] and "3,0%" in botn.sent[0]["text"])
+check("resta esaurito per il gruppo", stato["sold_out"] is True)
+check("percentuale comunque aggiornata", stato["percent"] == 1.9)
+
+print("\n=== 30c-bis. Esaurito e tornato davvero in vendita -> rientro e nuovo sold out ===")
+asyncio.run(run_avail(botn, [prodotto(5.0)]))
+check("rientro annunciato dal 5%", len(botn.sent) == 1 and "di nuovo in vendita" in botn.sent[0]["text"])
+check("con la disponibilità", "5,0%" in botn.sent[0]["text"])
+check("non più esaurito", availability_state.load_availability_state()["products"]["1104"]["sold_out"] is False)
 botn.sent.clear()
 asyncio.run(run_avail(botn, [prodotto(0.0, sold_out=True)]))
 check("il secondo sold out viene annunciato", len(botn.sent) == 1 and "SOLD OUT" in botn.sent[0]["text"])
@@ -929,6 +960,78 @@ check("un solo annuncio, non anche l'alert di soglia", len(botn2.sent) == 1)
 check("rientro riannunciato al ciclo dopo", "di nuovo in vendita" in botn2.sent[0]["text"])
 check("non più esaurito",
       availability_state.load_availability_state()["products"]["1104"]["sold_out"] is False)
+
+print("\n=== 30c-ter. Più prodotti nuovi nello stesso ciclo -> un messaggio solo ===")
+# Il 24/09 sono arrivati otto "Nuovo biglietto" separati nello stesso minuto.
+reset_avail()
+botq = FlakyBot()
+botq.muto = False
+asyncio.run(run_avail(botq, [prodotto(40.0)]))     # riepilogo iniziale
+botq.sent.clear()
+nuovi = [prodotto(90.0 - i, pid=str(1300 + i), name=f"BA 2027 locker box camp {i}") for i in range(3)]
+botq.muto = True
+asyncio.run(run_avail(botq, [prodotto(40.0)] + nuovi))
+stato = availability_state.load_availability_state()["products"]
+check("annuncio fallito: nessuno dei nuovi tracciato", not any(str(1300 + i) in stato for i in range(3)))
+botq.muto = False
+asyncio.run(run_avail(botq, [prodotto(40.0)] + nuovi))
+check("ritentato al ciclo dopo, in un messaggio solo", len(botq.sent) == 1)
+check("titolo al plurale", "3 nuovi biglietti in vendita" in botq.sent[0]["text"])
+check("tutti e tre nel messaggio",
+      all(f"locker box camp {i}" in botq.sent[0]["text"] for i in range(3)))
+stato = availability_state.load_availability_state()["products"]
+check("tutti e tre tracciati", all(str(1300 + i) in stato for i in range(3)))
+botq.sent.clear()
+asyncio.run(run_avail(botq, [prodotto(40.0)] + nuovi))
+check("nessun doppione al ciclo dopo", botq.sent == [])
+
+print("\n=== 30d-bis. Nuovo prodotto che compare sotto il 5% -> nessun annuncio ===")
+reset_avail()
+boto = FakeBot()
+asyncio.run(run_avail(boto, [prodotto(40.0)]))     # riepilogo iniziale
+boto.sent.clear()
+PARIA = dict(pid="1188", name="BA 2027 Spa hotel PARIA *** twin room (2 separate beds) [e-ticket]")
+asyncio.run(run_avail(boto, [prodotto(40.0), prodotto(1.9, **PARIA)]))
+check("un posto liberato non è un 'nuovo biglietto'", boto.sent == [])
+check("non tracciato", "1188" not in availability_state.load_availability_state()["products"])
+asyncio.run(run_avail(boto, [prodotto(40.0), prodotto(8.3, **PARIA)]))
+check("annunciato quando la disponibilità è reale",
+      len(boto.sent) == 1 and "Nuovo biglietto" in boto.sent[0]["text"])
+
+print("\n=== 30d-ter. Nuovo pass al 100% -> nessun 'sotto il 100%' alla prima vendita ===")
+# In produzione: "Nuovo biglietto" al 100% e mezz'ora dopo "Biglietti sotto il
+# 100%!" col 99,9% — cioè il primo biglietto venduto.
+reset_avail()
+botp = FakeBot()
+asyncio.run(run_avail(botp, [prodotto(40.0)]))     # riepilogo iniziale
+botp.sent.clear()
+SECONDA = dict(pid="1209", name="second edition BRUTAL ASSAULT 2027 festival pass [e-ticket]")
+asyncio.run(run_avail(botp, [prodotto(40.0), prodotto(100.0, **SECONDA)]))
+check("nuovo pass annunciato", len(botp.sent) == 1 and "Nuovo biglietto" in botp.sent[0]["text"])
+botp.sent.clear()
+asyncio.run(run_avail(botp, [prodotto(40.0), prodotto(99.9, **SECONDA)]))
+check("nessun alert per il primo biglietto venduto", botp.sent == [])
+check("scaglione aggiornato in silenzio",
+      availability_state.load_availability_state()["products"]["1209"]["level"] == 95)
+asyncio.run(run_avail(botp, [prodotto(40.0), prodotto(94.0, **SECONDA)]))
+check("il primo alert è sotto il 95%",
+      len(botp.sent) == 1 and "sotto il 95%" in botp.sent[0]["text"])
+reset_avail()
+botp2 = FakeBot()
+asyncio.run(run_avail(botp2, [prodotto(100.0)]))
+botp2.sent.clear()
+asyncio.run(run_avail(botp2, [prodotto(88.0)]))
+check("crollo dal 100%: annuncia la soglia più bassa",
+      len(botp2.sent) == 1 and "sotto il 90%" in botp2.sent[0]["text"])
+check("e non cita il 100% tra le soglie bruciate", "100%" not in botp2.sent[0]["text"])
+check("/availability al 100%: prossimo avviso sotto il 95%",
+      "Prossimo avviso: sotto il 95%" in notifier.format_availability_status([prodotto(100.0)]))
+
+print("\n=== 30d-quater. Disponibilità minuscola -> mai '0,0%' ===")
+check("0,03% non diventa 0,0%", notifier.format_percent(0.03) == "0,03%")
+check("sotto lo 0,01% si mostra 0,01%", notifier.format_percent(0.004) == "0,01%")
+check("sopra lo 0,1% resta un decimale", notifier.format_percent(9.97) == "9,9%")
+check("lo zero resta zero", notifier.format_percent(0.0) == "0,0%")
 
 print("\n=== 30e. Soglie attraversate verso l'alto ===")
 check("da 10,5% a 22% si risale sopra 15 e 20",
@@ -1375,12 +1478,30 @@ print("\n=== 43c. Alloggi: il tetto ai fetch copre tutta la pagina ===")
 # biglietti: con quel tetto gli ultimi non sarebbero mai stati controllati.
 check("tetto alloggi più alto di quello dei biglietti",
       accommodation_scraper.MAX_PRODUCT_FETCHES > availability_scraper.MAX_PRODUCT_FETCHES)
-check("tetto alloggi sopra i prodotti oggi in pagina (28)",
-      accommodation_scraper.MAX_PRODUCT_FETCHES >= 28)
+check("tetto alloggi sopra i prodotti oggi in pagina (82, ottobre 2026)",
+      accommodation_scraper.MAX_PRODUCT_FETCHES >= 82)
 molti = [{"id": str(i), "title": f"alloggio {i}", "url": "u", "sold_out": False}
          for i in range(30)]
 tagliati = availability_scraper.select_candidates(molti, "", 10)
-check("oltre il tetto i prodotti vengono tagliati", len(tagliati) == 10)
+check("oltre il tetto le schede non vengono scaricate", len(tagliati) == 10)
+
+print("\n=== 43d. Oltre il tetto -> prodotti non letti, mai spariti ===")
+# A ottobre la pagina alloggi è passata da 28 a 82 prodotti, con i nuovi hotel
+# in cima: le piazzole dei camp sono scivolate oltre il tetto, sparivano dal
+# risultato e il ciclo le avrebbe contate come esaurite.
+richieste = []
+vero_client = httpx.AsyncClient
+transport = shop_finto(True, elenco=ELENCO_LUNGO, richieste=richieste)
+availability_scraper.httpx.AsyncClient = lambda **opzioni: vero_client(transport=transport, **opzioni)
+try:
+    letti = asyncio.run(availability_scraper.fetch_shop_availability(
+        "https://brutalassault.cz/en/tickets", match="2027", max_fetches=5))
+finally:
+    availability_scraper.httpx.AsyncClient = vero_client
+check("tutti i 12 prodotti nel risultato", len(letti) == 12)
+check("i primi 5 letti", sum(1 for p in letti if not p.get("unreadable")) == 5)
+check("gli altri 7 come non letti", sum(1 for p in letti if p.get("unreadable")) == 7)
+check("solo 5 schede scaricate", sum(1 for r in richieste if "/detail/" in r) == 5)
 
 
 print("\n=== 44. Alloggi: ciclo completo, dal riepilogo al sold out ===")

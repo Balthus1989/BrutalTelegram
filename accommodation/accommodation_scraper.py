@@ -43,10 +43,12 @@ ACCOMMODATION_URL = "https://brutalassault.cz/en/accommodation"
 # alloggi di due anni entrambi acquistabili.
 PRODUCT_MATCH = os.getenv("ACCOMMODATION_PRODUCT_MATCH", "")
 
-# Più alto del tetto dei biglietti: la pagina alloggi elenca da sola quasi
-# trenta prodotti tra hotel, ready-to-camp e piazzole dei vari campi, e con il
-# tetto dei biglietti (25) gli ultimi resterebbero fuori dal monitoraggio.
-MAX_PRODUCT_FETCHES = 40
+# Più alto del tetto dei biglietti: la pagina alloggi cresce a ogni tranche di
+# hotel, e gli ultimi in elenco sono le piazzole dei camp. A settembre 2026 i
+# prodotti erano 28; a ottobre 82, e con il tetto a 40 le 36 piazzole e tende
+# dei camp, tutte in vendita, non venivano più controllate. Il margine serve
+# alla prossima crescita; oltre il tetto il log lo segnala a ogni ciclo.
+MAX_PRODUCT_FETCHES = 120
 
 
 async def fetch_accommodation_availability() -> Optional[list[dict]]:

@@ -43,11 +43,11 @@ TICKETS_URL = "https://brutalassault.cz/en/tickets"
 PRODUCT_MATCH = os.getenv("TICKET_PRODUCT_MATCH", "2027")
 
 # Tetto ai fetch delle schede prodotto in un ciclo: se un giorno lo shop
-# pubblicasse decine di articoli, il polling ogni 5 minuti resta sostenibile.
-# È un parametro e non una costante globale perché la pagina alloggi ne elenca
-# già più di quanti bastino ai biglietti: con un tetto unico i prodotti oltre il
-# limite verrebbero scartati in silenzio.
-MAX_PRODUCT_FETCHES = 25
+# pubblicasse centinaia di articoli, il polling resta sostenibile. È un
+# parametro e non una costante globale perché la pagina alloggi ne elenca molti
+# più dei biglietti. I biglietti 2027 in pagina sono 20 (ottobre 2026): il
+# margine serve alle tipologie che si aggiungono durante la vendita.
+MAX_PRODUCT_FETCHES = 50
 
 # Schede prodotto scaricate insieme, e pausa di ogni connessione tra una
 # richiesta e la successiva. Con 8 schede alla volta e nessuna pausa il sito
@@ -82,6 +82,13 @@ FETCH_TIMEOUT = 20.0
 
 # Scaglione delle notifiche: si avvisa a ogni multiplo di 5% attraversato.
 ALERT_STEP = 5
+
+# Disponibilità minima perché un prodotto esaurito, o mai visto in vendita,
+# venga annunciato come acquistabile. Sotto questa soglia sono posti liberati da
+# carrelli scaduti o disdette, che tornano esauriti dopo poco: in produzione il
+# pass first edition è stato dato "di nuovo in vendita" due volte in una notte
+# con lo 0,0% disponibile, seguito ogni volta da un secondo SOLD OUT.
+RESALE_MIN_PERCENT = ALERT_STEP
 
 _WIDTH_RE = re.compile(r"width\s*:\s*([0-9]+(?:[.,][0-9]+)?)\s*%")
 
@@ -316,7 +323,21 @@ async def _get_page(
             await throttle.wait()
             if throttle.hit:
                 return None
-            response = await client.get(url)
+            try:
+                response = await client.get(url)
+            except httpx.TransportError:
+                # Timeout o connessione rifiutata: contano come un 429. Quando
+                # il sito blocca un IP smette di rispondere del tutto, e senza
+                # questo il ciclo aspettava 20 secondi per ognuna delle 82
+                # schede alloggi, tenendo fermi anche i biglietti.
+                throttle.strikes += 1
+                if throttle.strikes > MAX_RETRIES and not throttle.hit:
+                    throttle.hit = True
+                    logger.warning(
+                        f"Il sito non risponde a {throttle.strikes} richieste di fila: "
+                        f"le schede restanti si leggono al prossimo ciclo."
+                    )
+                raise
             if response.status_code == 429:
                 throttle.strikes += 1
                 if throttle.strikes > MAX_RETRIES:
@@ -343,6 +364,27 @@ async def _get_page(
     return None
 
 
+def _unreadable(product: dict) -> dict:
+    """
+    Un prodotto in elenco la cui scheda non è stata letta in questo ciclo.
+
+    Resta nel risultato, con la disponibilità non leggibile: se ne uscisse, il
+    ciclo lo conterebbe come sparito dalla pagina e dopo due cicli lo darebbe
+    per esaurito.
+    """
+    return {
+        "id": product["id"],
+        "name": product["title"],
+        "url": product["url"],
+        "percent": None,
+        # Nemmeno il badge dell'elenco basta a dichiararlo esaurito: con la
+        # scheda mancante il nome è quello troncato dell'elenco, e un sold out
+        # si annuncia solo su una lettura completa.
+        "sold_out": False,
+        "unreadable": True,
+    }
+
+
 async def _fetch_product(
     client: httpx.AsyncClient,
     product: dict,
@@ -358,22 +400,16 @@ async def _fetch_product(
     due cicli di 429 dal sito per un falso SOLD OUT, seguito da un secondo
     annuncio "nuovo biglietto" quando la scheda tornava leggibile.
     """
-    unreadable = {
-        "id": product["id"],
-        "name": product["title"],
-        "url": product["url"],
-        "percent": None,
-        # Nemmeno il badge dell'elenco basta a dichiararlo esaurito: con la
-        # scheda mancante il nome è quello troncato dell'elenco, e un sold out
-        # si annuncia solo su una lettura completa.
-        "sold_out": False,
-        "unreadable": True,
-    }
+    unreadable = _unreadable(product)
 
     try:
         response = await _get_page(client, product["url"], semaphore, throttle)
     except httpx.HTTPError as e:
-        logger.warning(f"Scheda prodotto {product['id']} non raggiungibile: {e}")
+        # Il nome del tipo: un ConnectTimeout ha il messaggio vuoto, e la riga
+        # di log non diceva perché la scheda non era raggiungibile.
+        logger.warning(
+            f"Scheda prodotto {product['id']} non raggiungibile: {type(e).__name__} {e}"
+        )
         return unreadable
     if response is None:
         # Ciclo fermato dal 429, già segnalato una volta sola.
@@ -418,32 +454,35 @@ def _matches(text: Optional[str], match: str) -> bool:
     return bool(text) and match.lower() in text.lower()
 
 
+def _is_candidate(product: dict, match: str) -> bool:
+    """
+    True se vale la pena scaricare la scheda del prodotto.
+
+    Il titolo nell'elenco può essere troncato: un prodotto con titolo tagliato
+    va verificato sulla scheda completa, altrimenti un "... 2027 ..." oltre il
+    troncamento sfuggirebbe al filtro.
+    """
+    return _matches(product["title"], match) or product["title"].endswith("...")
+
+
 def select_candidates(
     products: list[dict],
     match: str,
     max_fetches: int,
     label: str = "prodotti",
 ) -> list[dict]:
-    """
-    Prodotti della pagina elenco di cui vale la pena scaricare la scheda.
-
-    Il titolo nell'elenco può essere troncato: un prodotto con titolo tagliato
-    va verificato sulla scheda completa, altrimenti un "... 2027 ..." oltre il
-    troncamento sfuggirebbe al filtro.
-    """
-    candidates = [
-        p for p in products if _matches(p["title"], match) or p["title"].endswith("...")
-    ]
+    """Prodotti della pagina elenco di cui scaricare la scheda, entro il tetto."""
+    candidates = [p for p in products if _is_candidate(p, match)]
 
     # Il taglio va segnalato: i prodotti oltre il tetto non vengono controllati,
-    # e senza una riga nei log il loro sold out mancante sembrerebbe un bug
-    # dello scraper. È il caso in cui è già incappata la pagina alloggi, che da
-    # sola elenca più prodotti del tetto pensato per i biglietti.
+    # e senza una riga nei log il loro silenzio sembrerebbe un bug dello
+    # scraper. È già successo due volte alla pagina alloggi, che cresce a ogni
+    # tranche di hotel aggiunta in cima.
     if len(candidates) > max_fetches:
         logger.warning(
             f"Pagina {label}: {len(candidates)} prodotti da controllare, "
-            f"tetto a {max_fetches}. I restanti non vengono monitorati: "
-            f"alza max_fetches."
+            f"tetto a {max_fetches}. I restanti restano non letti finché il "
+            f"tetto non viene alzato."
         )
         candidates = candidates[:max_fetches]
 
@@ -512,6 +551,17 @@ async def _fetch_shop_availability(
             results = await asyncio.gather(
                 *(_fetch_product(client, p, semaphore, throttle) for p in candidates)
             )
+
+            # Oltre il tetto: in elenco ma non letti. Se uscissero dal risultato
+            # verrebbero contati come spariti e dati per esauriti — sono le
+            # piazzole dei camp, scivolate oltre il tetto quando in cima alla
+            # pagina alloggi sono comparsi altri hotel.
+            scaricati = {p["id"] for p in candidates}
+            results += [
+                _unreadable(p)
+                for p in products
+                if p["id"] not in scaricati and _is_candidate(p, match)
+            ]
     except httpx.HTTPError as e:
         logger.error(f"Errore HTTP sulla pagina {label}: {e}")
         return None
