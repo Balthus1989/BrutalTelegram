@@ -17,6 +17,8 @@ Le voci nuove si scrivono sotto `[Non rilasciato]` man mano che si lavora:
 
 ## [Non rilasciato]
 
+## [1.3.4] - 2026-10-01
+
 ### Corretto
 
 - Le piazzole e le tende dei camp tornano sotto osservazione. La pagina alloggi

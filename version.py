@@ -13,8 +13,8 @@ questo file — non il tag — a dire quale codice sta girando su Fly.io.
 import re
 from pathlib import Path
 
-__version__ = "1.3.3"
-__release_date__ = "2026-09-24"
+__version__ = "1.3.4"
+__release_date__ = "2026-10-01"
 
 CHANGELOG_FILE = Path(__file__).parent / "CHANGELOG.md"
 
